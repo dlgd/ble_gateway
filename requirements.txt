@@ -1,0 +1,5 @@
+# Bluetooth Low Energy library
+bleak>=1.1.1
+
+# Cloud-agnostic MQTT client (replaces AWS IoT SDK)
+paho-mqtt>=1.6.0

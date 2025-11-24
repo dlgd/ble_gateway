@@ -1,0 +1,45 @@
+[Unit]
+Description=Bluetooth Gateway for AWS IoT Core
+Documentation=https://github.com/dlgd/ble_gateway
+After=network-online.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/ble_gateway
+
+# Use the virtual environment Python
+ExecStart=/home/pi/ble_gateway/venv/bin/python3 /home/pi/ble_gateway/ble_gateway.py -c /home/pi/ble_gateway/config.json -v
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits to prevent excessive CPU usage
+CPUQuota=50%
+MemoryMax=512M
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/ble_gateway
+
+# Grant Bluetooth capabilities
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ble-gateway
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

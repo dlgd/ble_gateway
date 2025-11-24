@@ -1,0 +1,51 @@
+{
+  "_comment": "Example configurations for different operating modes",
+
+  "immediate_mode": {
+    "_description": "Send data immediately without buffering (publish_interval_sec = 0)",
+    "publish_interval_sec": 0.0,
+    "throttle_control": false,
+    "max_buffer_size": 1,
+    "_behavior": "Each BLE advertisement is sent to AWS IoT Core immediately"
+  },
+
+  "buffered_mode_no_throttle": {
+    "_description": "Buffer messages for 10 seconds, keep ALL records",
+    "publish_interval_sec": 10.0,
+    "throttle_control": false,
+    "max_buffer_size": 100,
+    "_behavior": "All BLE advertisements buffered, sent every 10s or when buffer reaches 100"
+  },
+
+  "buffered_mode_with_throttle": {
+    "_description": "Buffer messages for 10 seconds, keep LAST record per device",
+    "publish_interval_sec": 10.0,
+    "throttle_control": true,
+    "max_buffer_size": 100,
+    "_behavior": "Only last advertisement per device kept, sent every 10s or when 100 unique devices"
+  },
+
+  "high_traffic_mode": {
+    "_description": "Efficient mode for areas with many BLE devices",
+    "publish_interval_sec": 30.0,
+    "throttle_control": true,
+    "max_buffer_size": 50,
+    "_behavior": "Continuous scanning, send last record per device every 30s, max 50 devices buffered"
+  },
+
+  "low_latency_mode": {
+    "_description": "Minimize delay, send immediately but throttle per device",
+    "publish_interval_sec": 0.0,
+    "throttle_control": true,
+    "max_buffer_size": 1,
+    "_behavior": "Continuous scanning, immediate send, throttle ensures only latest per device"
+  },
+
+  "battery_saver_mode": {
+    "_description": "Minimize AWS connections and CPU usage",
+    "publish_interval_sec": 60.0,
+    "throttle_control": true,
+    "max_buffer_size": 20,
+    "_behavior": "Continuous scanning, send once per minute, very low power consumption"
+  }
+}

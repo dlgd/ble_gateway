@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ble-gateway"
+version = "1.0.0"
+description = "Professional BLE gateway for AWS IoT Core - captures BLE advertisements and publishes to MQTT"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "BLE Gateway Contributors"}
+]
+keywords = [
+    "bluetooth",
+    "ble",
+    "aws-iot",
+    "iot",
+    "gateway",
+    "mqtt",
+    "raspberry-pi",
+    "beacon"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Topic :: System :: Hardware",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.7"
+dependencies = [
+    "bleak>=0.20.0",
+    "paho-mqtt>=2.1.0,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "flake8",
+    "mypy",
+    "pytest",
+]
+
+[project.urls]
+Homepage = "https://github.com/dlgd/ble_gateway"
+Documentation = "https://github.com/dlgd/ble_gateway/blob/main/README.md"
+Repository = "https://github.com/dlgd/ble_gateway"
+Issues = "https://github.com/dlgd/ble_gateway/issues"
+Changelog = "https://github.com/dlgd/ble_gateway/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ble-gateway = "ble_gateway:main"
+
+[tool.setuptools]
+py-modules = ["ble_gateway"]
+
+[tool.black]
+line-length = 100
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311']
+
+[tool.mypy]
+python_version = "3.7"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
