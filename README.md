@@ -7,11 +7,11 @@ A professional-grade Bluetooth Low Energy (BLE) gateway application that capture
 **BEFORE running the gateway, you must:**
 
 1. **Install dependencies**: Follow the [Installation](#installation) section
-2. **Set up AWS IoT Core**: Follow the [AWS IoT Core Setup](#aws-iot-core-setup) section to get certificates
-3. **Configure the gateway**: Copy `config.example.json` to `config.json` and fill in your AWS details
+2. **Set up MQTT broker**: Configure your MQTT broker and obtain any required certificates
+3. **Configure the gateway**: Copy `config.example.json` to `config.json` and fill in your MQTT broker details
 4. **Run**: `source venv/bin/activate && python ble_gateway.py -c config.json -v`
 
-The gateway **will not work** without valid AWS IoT Core certificates. See the troubleshooting section if you encounter errors.
+For cloud MQTT brokers requiring TLS/certificates (AWS IoT Core, Azure IoT Hub, etc.), ensure you have valid certificates configured. See the [Configuration](#configuration) section for details.
 
 ## Features
 
@@ -46,7 +46,7 @@ See [FEATURES.md](docs/FEATURES.md) for detailed feature documentation.
 ### Software
 - Python 3.7 or higher
 - Bluetooth adapter with BLE support
-- AWS IoT Core thing provisioned with certificates
+- MQTT broker (cloud-based or local)
 
 ## Installation
 
@@ -94,72 +94,56 @@ sudo setcap cap_net_raw,cap_net_admin+eip venv/bin/python3
 
 Log out and log back in for group changes to take effect.
 
-## AWS IoT Core Setup
+## MQTT Broker Setup
 
-### 1. Create a Thing in AWS IoT Core
+The gateway supports any MQTT broker. Choose the option that best fits your needs:
+
+### Option 1: Local Mosquitto Broker (Simplest)
 
 ```bash
-# Using AWS CLI
+# Install Mosquitto
+sudo apt-get install mosquitto mosquitto-clients
+
+# Start Mosquitto
+sudo systemctl start mosquitto
+sudo systemctl enable mosquitto
+
+# Test connection
+mosquitto_pub -h localhost -t test -m "hello"
+```
+
+### Option 2: AWS IoT Core (Cloud)
+
+1. Create a Thing in AWS IoT Core:
+```bash
 aws iot create-thing --thing-name bluetooth-gateway-001
 ```
 
-### 2. Create and Download Certificates
-
+2. Create and download certificates:
 ```bash
-# Create certificate
 aws iot create-keys-and-certificate \
   --set-as-active \
   --certificate-pem-outfile certificate.pem.crt \
   --public-key-outfile public.pem.key \
   --private-key-outfile private.pem.key
 
-# Download Amazon Root CA
 wget https://www.amazontrust.com/repository/AmazonRootCA1.pem
 ```
 
-### 3. Create and Attach Policy
+3. Create and attach policy (see AWS IoT documentation)
 
-Create a policy file `iot-policy.json`:
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "iot:Connect",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:client/bluetooth-gateway-*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "iot:Publish",
-      "Resource": "arn:aws:iot:REGION:ACCOUNT_ID:topic/ble/*"
-    }
-  ]
-}
-```
-
-```bash
-# Create policy
-aws iot create-policy \
-  --policy-name BLEGatewayPolicy \
-  --policy-document file://iot-policy.json
-
-# Attach policy to certificate
-aws iot attach-policy \
-  --policy-name BLEGatewayPolicy \
-  --target "arn:aws:iot:REGION:ACCOUNT_ID:cert/CERTIFICATE_ID"
-
-# Attach certificate to thing
-aws iot attach-thing-principal \
-  --thing-name bluetooth-gateway-001 \
-  --principal "arn:aws:iot:REGION:ACCOUNT_ID:cert/CERTIFICATE_ID"
-```
-
-### 4. Get Your IoT Endpoint
-
+4. Get your endpoint:
 ```bash
 aws iot describe-endpoint --endpoint-type iot:Data-ATS
 ```
+
+### Option 3: Azure IoT Hub (Cloud)
+
+Follow Azure IoT Hub documentation to create an IoT Hub and obtain connection strings and certificates.
+
+### Option 4: HiveMQ Cloud or Other MQTT Brokers
+
+Follow your provider's documentation to obtain connection details and any required certificates.
 
 ## Configuration
 
@@ -170,14 +154,14 @@ aws iot describe-endpoint --endpoint-type iot:Data-ATS
 cp config.example.json config.json
 ```
 
-**Step 2**: Edit `config.json` with your AWS IoT Core details:
+**Step 2**: Edit `config.json` with your MQTT broker details:
+
+#### Local Mosquitto (No TLS):
 ```json
 {
-  "aws_iot": {
-    "endpoint": "your-endpoint.iot.us-east-1.amazonaws.com",
-    "cert_path": "certs/certificate.pem.crt",
-    "key_path": "certs/private.pem.key",
-    "root_ca_path": "certs/AmazonRootCA1.pem",
+  "mqtt": {
+    "broker": "localhost",
+    "port": 1883,
     "client_id": "bluetooth-gateway-001",
     "topic": "ble/gateway/data"
   },
@@ -191,21 +175,56 @@ cp config.example.json config.json
 }
 ```
 
-**IMPORTANT**: You must complete the AWS IoT Core setup (see above) and obtain valid certificates before running the gateway. The certificate files must:
+#### AWS IoT Core (TLS with certificates):
+```json
+{
+  "mqtt": {
+    "broker": "your-endpoint.iot.us-east-1.amazonaws.com",
+    "port": 8883,
+    "cert_path": "certs/certificate.pem.crt",
+    "key_path": "certs/private.pem.key",
+    "root_ca_path": "certs/AmazonRootCA1.pem",
+    "client_id": "bluetooth-gateway-001",
+    "topic": "ble/gateway/data"
+  },
+  "publish_interval_sec": 0.0,
+  "throttle_control": true,
+  "max_buffer_size": 100
+}
+```
+
+#### Other Cloud Brokers (TLS with username/password):
+```json
+{
+  "mqtt": {
+    "broker": "your-broker.hivemq.cloud",
+    "port": 8883,
+    "username": "your-username",
+    "password": "your-password",
+    "client_id": "bluetooth-gateway-001",
+    "topic": "ble/gateway/data"
+  }
+}
+```
+
+**IMPORTANT**: For brokers requiring TLS/certificates, ensure certificate files:
 - Exist at the specified paths
-- Not be empty
+- Are not empty
 - Have proper permissions (cert: 644, key: 600)
 
 ### Configuration Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `aws_iot.endpoint` | string | AWS IoT Core endpoint (required) - Get with: `aws iot describe-endpoint --endpoint-type iot:Data-ATS` |
-| `aws_iot.cert_path` | string | Path to device certificate (required) - Must exist and not be empty |
-| `aws_iot.key_path` | string | Path to private key (required) - Must exist and not be empty |
-| `aws_iot.root_ca_path` | string | Path to Amazon Root CA (required) - Download from Amazon Trust Services |
-| `aws_iot.client_id` | string | MQTT client ID (default: "bluetooth-gateway") |
-| `aws_iot.topic` | string | MQTT topic to publish to (default: "ble/gateway/data") |
+| `mqtt.broker` | string | MQTT broker hostname or IP (required) |
+| `mqtt.port` | integer | MQTT broker port (default: 1883 for plain, 8883 for TLS) |
+| `mqtt.client_id` | string | MQTT client ID (default: "bluetooth-gateway") |
+| `mqtt.topic` | string | MQTT topic to publish to (default: "ble/gateway/data") |
+| `mqtt.username` | string | MQTT username (optional, for brokers requiring authentication) |
+| `mqtt.password` | string | MQTT password (optional, for brokers requiring authentication) |
+| `mqtt.cert_path` | string | Path to device certificate (optional, for TLS) |
+| `mqtt.key_path` | string | Path to private key (optional, for TLS) |
+| `mqtt.root_ca_path` | string | Path to root CA certificate (optional, for TLS) |
 | **`publish_interval_sec`** | **float** | **Publish interval for uploading data (default: 0.0)**<br>• **0** = Send immediately (no buffering)<br>• **> 0** = Buffer messages and send when interval reached OR buffer is full |
 | **`throttle_control`** | **boolean** | **Enable throttle control (default: true)**<br>• **true** = Keep only LAST record per device in buffer<br>• **false** = Keep ALL records in buffer |
 | `max_buffer_size` | integer | Maximum buffer size before forced flush (default: 100) |
@@ -251,7 +270,7 @@ The gateway implements buffering and throttle control similar to commercial BLE 
 
 ```json
 {
-  "_comment": "Efficient mode - reduce AWS costs",
+  "_comment": "Efficient mode - reduce bandwidth and broker load",
   "publish_interval_sec": 30.0,
   "throttle_control": true,
   "max_buffer_size": 50
@@ -339,7 +358,7 @@ usage: ble_gateway.py [-h] -c CONFIG [-v] [-d]
                       [--publish-interval PUBLISH_INTERVAL]
                       [--no-throttle] [--buffer-size BUFFER_SIZE]
 
-Bluetooth Gateway for AWS IoT Core
+Bluetooth Gateway for MQTT Brokers
 
 options:
   -h, --help            show this help message and exit
@@ -406,9 +425,9 @@ Use the provided installation script:
 # Navigate to project directory
 cd ble_gateway
 
-# Ensure config.json is configured with your AWS IoT settings
+# Ensure config.json is configured with your MQTT broker settings
 cp config.example.json config.json
-nano config.json  # Edit with your AWS details
+nano config.json  # Edit with your MQTT broker details
 
 # Run the installation script
 sudo ./install-service.sh
@@ -442,7 +461,7 @@ If you prefer manual setup, create `/etc/systemd/system/ble-gateway.service`:
 
 ```ini
 [Unit]
-Description=Bluetooth Gateway for AWS IoT Core
+Description=Bluetooth Gateway for MQTT
 Documentation=https://github.com/dlgd/ble_gateway
 After=network-online.target bluetooth.target
 Wants=network-online.target
@@ -630,11 +649,11 @@ sudo setcap cap_net_raw,cap_net_admin+eip venv/bin/python3
 sudo venv/bin/python3 ble_gateway.py -c config.json
 ```
 
-### AWS IoT Connection Issues
+### MQTT Connection Issues
 
-**"AWS_ERROR_INVALID_ARGUMENT" or certificate errors:**
+**Certificate or TLS errors (for cloud brokers):**
 
-This means your certificate files are missing, empty, or invalid. Check:
+Check your certificate files if using TLS:
 
 ```bash
 # 1. Verify certificate files exist and are not empty
@@ -648,25 +667,23 @@ cat certificate.pem.crt | head -2
 cat private.pem.key | head -2
 # Should show: -----BEGIN RSA PRIVATE KEY----- or -----BEGIN PRIVATE KEY-----
 
-cat AmazonRootCA1.pem | head -2
-# Should show: -----BEGIN CERTIFICATE-----
-
 # 3. Verify certificate with OpenSSL
 openssl x509 -in certificate.pem.crt -text -noout
 
 # 4. Set proper permissions
 chmod 644 certificate.pem.crt
 chmod 600 private.pem.key
-chmod 644 AmazonRootCA1.pem
+chmod 644 root_ca.pem
 
-# 5. Test connectivity to AWS IoT endpoint
-ping your-endpoint.iot.us-east-1.amazonaws.com
+# 5. Test connectivity to broker
+ping your-broker-hostname
 ```
 
-**If you haven't set up AWS IoT Core yet:**
-- You MUST complete the "AWS IoT Core Setup" section first
-- You need real certificates from AWS, not placeholder files
-- The gateway will not work with empty or test certificate files
+**Connection refused errors:**
+- Verify broker hostname and port are correct
+- Check firewall rules allow outbound connections
+- Ensure broker is running and accessible
+- For local Mosquitto: `sudo systemctl status mosquitto`
 
 ### No BLE Devices Detected
 
@@ -761,13 +778,13 @@ systemctl status ble-gateway
 systemd-cgtop
 ```
 
-### Reduce AWS Costs
+### Reduce Bandwidth and Broker Load
 
 - Increase `publish_interval_sec` to minimize messages (e.g., 10-30 seconds)
 - Enable `throttle_control` to send only latest record per device
 - Use MAC or manufacturer ID whitelists to only track specific devices
-- Consider using AWS IoT Core Basic Ingest to bypass message broker costs
 - Use MQTT QoS 0 instead of QoS 1 if you can tolerate message loss
+- For cloud brokers, consider batch publishing to reduce connection overhead
 
 ### Handle High Device Density
 
@@ -788,13 +805,13 @@ systemd-cgtop
    chmod 644 certificate.pem.crt
    ```
 
-2. **IoT Policy**: Use least-privilege IAM policies with specific resource ARNs
+2. **Access Control**: Configure appropriate broker access policies and permissions
 
 3. **Network**: Run on isolated network or VLAN when possible
 
 4. **Updates**: Keep dependencies updated
    ```bash
-   pip install --upgrade bleak awsiotsdk
+   pip install --upgrade -r requirements.txt
    ```
 
 ## Documentation
@@ -828,7 +845,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 For issues and questions:
 - Check the [troubleshooting guide](docs/TROUBLESHOOTING.md)
-- Review AWS IoT Core documentation
+- Review your MQTT broker documentation
 - Verify Bluetooth adapter compatibility
 - Check the [CHANGELOG](CHANGELOG.md) for recent changes
 
