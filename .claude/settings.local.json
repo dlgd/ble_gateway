@@ -37,7 +37,8 @@
       "Bash(timeout 30 mosquitto_sub:*)",
       "Bash(mosquitto_pub:*)",
       "Bash(timeout 15 python3:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(sudo cat:*)"
     ],
     "deny": [],
     "ask": []

@@ -8,10 +8,10 @@ Wants=network-online.target
 Type=simple
 User=pi
 Group=pi
-WorkingDirectory=/home/pi/ble_gateway
+WorkingDirectory=/home/pi/opt/ble_gateway
 
 # Use the virtual environment Python
-ExecStart=/home/pi/ble_gateway/venv/bin/python3 /home/pi/ble_gateway/ble_gateway.py -c /home/pi/ble_gateway/config.json -v
+ExecStart=/home/pi/opt/ble_gateway/venv/bin/python3 /home/pi/opt/ble_gateway/ble_gateway.py -c /home/pi/opt/ble_gateway/config.json -v
 
 # Restart policy
 Restart=always
@@ -26,7 +26,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/pi/ble_gateway
+ReadWritePaths=/home/pi/opt/ble_gateway
 
 # Grant Bluetooth capabilities
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN

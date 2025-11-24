@@ -58,7 +58,7 @@ TEMP_SERVICE="/tmp/ble-gateway.service.tmp"
 echo "Creating systemd service file..."
 
 # Replace placeholders in service file
-sed "s|/home/pi|$ACTUAL_HOME|g" "$SCRIPT_DIR/ble-gateway.service" | \
+sed "s|/home/pi/opt/ble_gateway|$SCRIPT_DIR|g" "$SCRIPT_DIR/ble-gateway.service" | \
 sed "s|User=pi|User=$ACTUAL_USER|g" | \
 sed "s|Group=pi|Group=$ACTUAL_USER|g" > "$TEMP_SERVICE"
 
