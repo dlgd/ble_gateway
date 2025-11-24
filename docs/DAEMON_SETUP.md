@@ -11,7 +11,7 @@ cd /home/daniel/src/ble_gateway
 
 # Copy and edit configuration
 cp config.example.json config.json
-nano config.json  # Add your AWS IoT Core endpoint and certificate paths
+nano config.json  # Add your MQTT broker settings and certificate paths (if using TLS)
 ```
 
 ### Step 2: Install as Service
@@ -69,7 +69,7 @@ sudo systemctl status ble-gateway
 
 Expected output:
 ```
-● ble-gateway.service - Bluetooth Gateway for AWS IoT Core
+● ble-gateway.service - Bluetooth Gateway for MQTT
    Loaded: loaded (/etc/systemd/system/ble-gateway.service; enabled; vendor preset: enabled)
    Active: active (running) since ...
 ```
@@ -130,7 +130,7 @@ sudo journalctl -u ble-gateway -n 100
 
 # Common issues:
 # 1. config.json not found or invalid
-# 2. AWS IoT certificates missing/invalid
+# 2. MQTT broker certificates missing/invalid (if using TLS)
 # 3. Virtual environment not set up
 # 4. Bluetooth adapter not available
 ```
@@ -142,10 +142,10 @@ sudo journalctl -u ble-gateway -n 100
 sudo journalctl -u ble-gateway -n 100 --no-pager
 
 # Common causes:
-# - Invalid AWS IoT endpoint
+# - Invalid MQTT broker address or port
 # - Network not available
 # - Bluetooth permission issues
-# - Certificate files corrupted
+# - Certificate files corrupted (if using TLS)
 ```
 
 ### High CPU Usage
@@ -216,7 +216,7 @@ sudo systemctl daemon-reload
 1. **Always test manually first** before installing as service
 2. **Monitor logs** after installation to ensure it's working
 4. **Use whitelists** to reduce unnecessary processing
-5. **Check logs regularly** for any AWS IoT connection issues
+5. **Check logs regularly** for any MQTT connection issues
 
 ## Performance Tips
 
@@ -238,5 +238,5 @@ If issues persist:
 1. Check full logs: `sudo journalctl -u ble-gateway --no-pager`
 2. Test manually: `python ble_gateway.py -c config.json -d`
 3. Check Bluetooth: `hciconfig`
-4. Verify AWS IoT certs: `ls -lh /path/to/certs/`
+4. Verify certificates (if using TLS): `ls -lh /path/to/certs/`
 5. Review README.md and TROUBLESHOOTING.md

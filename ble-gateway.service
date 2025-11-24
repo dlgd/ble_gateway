@@ -1,5 +1,5 @@
 [Unit]
-Description=Bluetooth Gateway for AWS IoT Core
+Description=Bluetooth Gateway for MQTT
 Documentation=https://github.com/dlgd/ble_gateway
 After=network-online.target bluetooth.target
 Wants=network-online.target

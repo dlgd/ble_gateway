@@ -64,7 +64,7 @@ DEFAULT_PUBLISH_INTERVAL = 0.0
 DEFAULT_MAX_BUFFER_SIZE = 100
 DEFAULT_THROTTLE_CONTROL = True
 DEFAULT_QOS = 1
-DEFAULT_KEEPALIVE = 1200  # AWS IoT recommended: 1200 seconds (20 minutes)
+DEFAULT_KEEPALIVE = 1200  # MQTT keepalive: 1200 seconds (20 minutes)
 DEFAULT_PORT = 8883
 DEFAULT_TOPIC = 'ble/gateway/data'
 DEFAULT_CLIENT_ID = 'ble-gateway-001'
@@ -637,10 +637,10 @@ class BluetoothGateway:
         )
 
         # Initialize MQTT publisher
-        mqtt_config = config.get('mqtt', config.get('aws_iot', {}))  # Support legacy aws_iot config
+        mqtt_config = config.get('mqtt', {})
 
         # Extract MQTT settings
-        broker = mqtt_config.get('endpoint', mqtt_config.get('broker'))
+        broker = mqtt_config.get('broker')
         port = mqtt_config.get('port', DEFAULT_PORT)
 
         # Client ID: Read directly from config
@@ -656,9 +656,9 @@ class BluetoothGateway:
         tls_config = None
         if auth_type == 'mtls':
             tls_config = {
-                'ca_certs': mqtt_config.get('root_ca_path', mqtt_config.get('ca_certs')),
-                'certfile': mqtt_config.get('cert_path', mqtt_config.get('certfile')),
-                'keyfile': mqtt_config.get('key_path', mqtt_config.get('keyfile'))
+                'ca_certs': mqtt_config.get('root_ca_path'),
+                'certfile': mqtt_config.get('cert_path'),
+                'keyfile': mqtt_config.get('key_path')
             }
         
         # Build credentials for userpass/token
@@ -797,7 +797,7 @@ class BluetoothGateway:
 
                 # Debug log: show message being published
                 self.logger.debug(
-                    f"{ICON_PUBLISH} Publishing to AWS IoT - Device: {ble_message.device_address}, "
+                    f"{ICON_PUBLISH} Publishing to MQTT - Device: {ble_message.device_address}, "
                     f"Topic: {self.topic}, "
                     f"Payload: {json_payload}"
                 )
@@ -949,14 +949,14 @@ def load_config(config_path: str) -> dict:
                 f"throttle_control must be a boolean, got: {config['throttle_control']}"
             )
 
-    # Validate MQTT configuration (support both new and legacy formats)
-    mqtt_config = config.get('mqtt', config.get('aws_iot'))
+    # Validate MQTT configuration
+    mqtt_config = config.get('mqtt')
     if not mqtt_config:
-        raise ValueError("Configuration must include either 'mqtt' or 'aws_iot' section")
+        raise ValueError("Configuration must include 'mqtt' section")
 
     # Validate required MQTT fields
-    if 'endpoint' not in mqtt_config and 'broker' not in mqtt_config:
-        raise ValueError("MQTT configuration must include 'endpoint' or 'broker'")
+    if 'broker' not in mqtt_config:
+        raise ValueError("MQTT configuration must include 'broker'")
 
     # Validate topic format
     topic = mqtt_config.get('topic', DEFAULT_TOPIC)

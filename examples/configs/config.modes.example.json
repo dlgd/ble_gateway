@@ -6,7 +6,7 @@
     "publish_interval_sec": 0.0,
     "throttle_control": false,
     "max_buffer_size": 1,
-    "_behavior": "Each BLE advertisement is sent to AWS IoT Core immediately"
+    "_behavior": "Each BLE advertisement is sent to MQTT broker immediately"
   },
 
   "buffered_mode_no_throttle": {
@@ -42,7 +42,7 @@
   },
 
   "battery_saver_mode": {
-    "_description": "Minimize AWS connections and CPU usage",
+    "_description": "Minimize MQTT connections and CPU usage",
     "publish_interval_sec": 60.0,
     "throttle_control": true,
     "max_buffer_size": 20,

@@ -20,17 +20,18 @@ python ble_gateway.py -c config.json -v
 
 ---
 
-### Error: "AWS_ERROR_INVALID_ARGUMENT: An invalid argument was passed to a function"
+### Error: MQTT Connection Issues (TLS/Certificate errors)
 
-**Problem**: Certificate files are missing, empty, or invalid.
+**Problem**: Certificate files are missing, empty, or invalid (when using TLS).
 
-**What this means**: The AWS IoT SDK cannot read your certificate files. This happens when:
+**What this means**: The MQTT client cannot read your certificate files or connect to the broker. This happens when:
 - Certificate file paths in `config.json` are incorrect
 - Certificate files don't exist at the specified paths
 - Certificate files exist but are empty (0 bytes)
-- You're using placeholder/test certificates instead of real AWS IoT certificates
+- Broker address or port is incorrect
+- Network connectivity issues
 
-**Solution**:
+**Solution for Certificate-based Authentication (TLS)**:
 
 **Step 1**: Check if your certificates exist and are valid:
 ```bash
@@ -43,48 +44,39 @@ ls -lh
 # Verify certificate content (should show "BEGIN CERTIFICATE")
 head -2 certificate.pem.crt
 head -2 private.pem.key
-head -2 AmazonRootCA1.pem
+head -2 root_ca.pem
 ```
 
-**Step 2**: If certificates don't exist or are empty, you need to set up AWS IoT Core:
-
-```bash
-# 1. Create an IoT Thing
-aws iot create-thing --thing-name bluetooth-gateway-001
-
-# 2. Create certificates
-aws iot create-keys-and-certificate \
-  --set-as-active \
-  --certificate-pem-outfile certificate.pem.crt \
-  --public-key-outfile public.pem.key \
-  --private-key-outfile private.pem.key
-
-# 3. Download Amazon Root CA
-wget https://www.amazontrust.com/repository/AmazonRootCA1.pem
-
-# 4. Get your IoT endpoint
-aws iot describe-endpoint --endpoint-type iot:Data-ATS
-```
-
-**Step 3**: Update your `config.json` with the correct paths:
+**Step 2**: Update your `config.json` with the correct paths:
 ```json
 {
-  "aws_iot": {
-    "endpoint": "xxxxx.iot.us-east-1.amazonaws.com",
+  "mqtt": {
+    "broker": "your-broker-hostname.example.com",
+    "port": 8883,
     "cert_path": "/absolute/path/to/certificate.pem.crt",
     "key_path": "/absolute/path/to/private.pem.key",
-    "root_ca_path": "/absolute/path/to/AmazonRootCA1.pem",
+    "root_ca_path": "/absolute/path/to/root_ca.pem",
     "client_id": "bluetooth-gateway-001",
     "topic": "ble/gateway/data"
   }
 }
 ```
 
-**Step 4**: Set proper permissions:
+**Step 3**: Set proper permissions:
 ```bash
 chmod 644 certificate.pem.crt
 chmod 600 private.pem.key
-chmod 644 AmazonRootCA1.pem
+chmod 644 root_ca.pem
+```
+
+**Step 4**: Test broker connectivity:
+```bash
+# Test network connection
+ping your-broker-hostname.example.com
+
+# Test MQTT connection (if mosquitto-clients installed)
+mosquitto_pub -h your-broker-hostname.example.com -p 8883 -t test -m "hello" \
+  --cafile root_ca.pem --cert certificate.pem.crt --key private.pem.key
 ```
 
 **Important**: Use absolute paths in your config.json (e.g., `/home/pi/certs/cert.pem`) not relative paths.
@@ -103,10 +95,10 @@ find ~ -name "*.pem.crt" -o -name "*.pem.key"
 # Update config.json with the correct absolute paths
 # Example:
 {
-  "aws_iot": {
-    "cert_path": "/home/daniel/aws-certs/certificate.pem.crt",
-    "key_path": "/home/daniel/aws-certs/private.pem.key",
-    "root_ca_path": "/home/daniel/aws-certs/AmazonRootCA1.pem"
+  "mqtt": {
+    "cert_path": "/home/daniel/certs/certificate.pem.crt",
+    "key_path": "/home/daniel/certs/private.pem.key",
+    "root_ca_path": "/home/daniel/certs/root_ca.pem"
   }
 }
 ```
@@ -117,19 +109,22 @@ find ~ -name "*.pem.crt" -o -name "*.pem.key"
 
 **Problem**: Certificate files exist but contain no data (0 bytes).
 
-**Solution**: You need to download real certificates from AWS IoT Core. Empty files won't work.
+**Solution**: You need to obtain valid certificates from your MQTT broker provider. Empty files won't work.
 
 ```bash
 # Check file sizes
 ls -lh /path/to/certs/
 
-# If files are 0 bytes, delete them and get real certificates
+# If files are 0 bytes, delete them and get real certificates from your provider
 rm certificate.pem.crt private.pem.key
 
-# Get certificates from AWS IoT Core (see AWS IoT Core Setup in README)
-aws iot create-keys-and-certificate --set-as-active \
-  --certificate-pem-outfile certificate.pem.crt \
-  --private-key-outfile private.pem.key
+# For local Mosquitto without TLS, update config.json to not use certificates:
+{
+  "mqtt": {
+    "broker": "localhost",
+    "port": 1883
+  }
+}
 ```
 
 ---
@@ -186,9 +181,9 @@ sudo setcap cap_net_raw,cap_net_admin+eip venv/bin/python3
 3. **Verify your setup**:
    - Python 3.7+ installed: `python3 --version`
    - Virtual environment activated: `which python` should show venv path
-   - Dependencies installed: `pip list | grep -E "(bleak|awsiotsdk)"`
+   - Dependencies installed: `pip list | grep -E "(bleak|paho-mqtt)"`
    - Bluetooth working: `hciconfig`
-   - AWS IoT certificates valid and not empty: `ls -lh /path/to/certs/`
+   - Certificates valid (if using TLS): `ls -lh /path/to/certs/`
 
 ---
 

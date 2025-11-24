@@ -22,7 +22,8 @@ config.json
 *.pem
 *.crt
 *.key
-aws_iot_core_certs/
+certs/
+certificates/
 
 # IDE
 .vscode/

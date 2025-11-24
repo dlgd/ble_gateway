@@ -4,7 +4,7 @@ This document describes the gateway features as specified in commercial BLE gate
 
 ## Request Interval
 
-**Feature**: Assign the request interval to upload data to AWS IoT Core.
+**Feature**: Assign the request interval to upload data to MQTT broker.
 
 **Implementation**:
 - Configuration parameter: `publish_interval_sec`
@@ -14,7 +14,7 @@ This document describes the gateway features as specified in commercial BLE gate
   - The time interval is reached
 
 **Benefits**:
-- Reduces AWS IoT connections and costs
+- Reduces MQTT broker connections and bandwidth
 - Aggregates multiple advertisements into single publish operations
 - Configurable trade-off between latency and efficiency
 
@@ -148,7 +148,7 @@ This document describes the gateway features as specified in commercial BLE gate
 | Timestamp (ms) | ✓ | ✓ | `timestamp_ms` field |
 | JSON Format | ✓ | ✓ | Compact JSON strings |
 | Buffer Size Control | ✓ | ✓ | `max_buffer_size` parameter |
-| AWS IoT Core | HTTP | MQTT | Native AWS IoT SDK |
+| MQTT Protocol | HTTP | MQTT | Any MQTT Broker |
 | Passive Scanning | ✓ | ✓ | Low power BLE scanning |
 | Daemon Mode | ✓ | ✓ | systemd service |
 
@@ -181,7 +181,7 @@ This document describes the gateway features as specified in commercial BLE gate
   "max_buffer_size": 50
 }
 ```
-**Behavior**: Minimize AWS connections, send once per minute
+**Behavior**: Minimize MQTT connections, send once per minute
 
 ### 4. All Records Mode
 ```json
@@ -213,8 +213,8 @@ python ble_gateway.py -c config.json --request-interval 30 --buffer-size 50 -v
 
 ## Performance Impact
 
-| Configuration | CPU Usage | AWS Connections/min | Bandwidth |
-|---------------|-----------|---------------------|-----------|
+| Configuration | CPU Usage | MQTT Messages/min | Bandwidth |
+|---------------|-----------|-------------------|-----------|
 | Immediate + No Throttle | Medium | High (100+) | High |
 | Immediate + Throttle | Low-Medium | Medium (50+) | Medium |
 | Buffered (30s) + No Throttle | Low | 2 | High |
@@ -227,6 +227,6 @@ python ble_gateway.py -c config.json --request-interval 30 --buffer-size 50 -v
 
 This provides the best balance of:
 - Low CPU usage (< 5%)
-- Minimal AWS costs
+- Minimal broker load and bandwidth
 - Reasonable latency (< 30s)
-- Efficient bandwidth usage
+- Efficient network usage
