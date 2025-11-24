@@ -36,7 +36,7 @@ echo ""
 if [ ! -f "$SCRIPT_DIR/config.json" ]; then
     echo -e "${YELLOW}Warning: config.json not found!${NC}"
     echo "Please create config.json before starting the service."
-    echo "Copy config.example.json and edit with your AWS IoT settings:"
+    echo "Copy config.example.json and edit with your MQTT broker settings:"
     echo "  cp config.example.json config.json"
     echo ""
 fi
@@ -70,10 +70,13 @@ echo -e "${GREEN}✓${NC} Service file created: $SERVICE_FILE"
 
 # Grant Bluetooth capabilities to Python binary
 PYTHON_BIN="$SCRIPT_DIR/venv/bin/python3"
-if [ -f "$PYTHON_BIN" ]; then
+if [ -f "$PYTHON_BIN" ] || [ -L "$PYTHON_BIN" ]; then
     echo "Granting Bluetooth capabilities to Python binary..."
-    setcap cap_net_raw,cap_net_admin+eip "$PYTHON_BIN"
-    echo -e "${GREEN}✓${NC} Capabilities granted to $PYTHON_BIN"
+    # Resolve symlink to get the actual binary
+    REAL_PYTHON=$(readlink -f "$PYTHON_BIN")
+    echo "Python binary: $REAL_PYTHON"
+    setcap cap_net_raw,cap_net_admin+eip "$REAL_PYTHON"
+    echo -e "${GREEN}✓${NC} Capabilities granted to $REAL_PYTHON"
 else
     echo -e "${RED}Error: Python binary not found at $PYTHON_BIN${NC}"
     exit 1
@@ -88,7 +91,7 @@ echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo "Next steps:"
-echo "  1. Ensure config.json is properly configured with AWS IoT settings"
+echo "  1. Ensure config.json is properly configured with MQTT broker settings"
 echo "  2. Enable service to start on boot: sudo systemctl enable ble-gateway"
 echo "  3. Start the service: sudo systemctl start ble-gateway"
 echo "  4. Check status: sudo systemctl status ble-gateway"
