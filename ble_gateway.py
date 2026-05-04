@@ -67,7 +67,7 @@ DEFAULT_QOS = 1
 DEFAULT_KEEPALIVE = 1200  # MQTT keepalive: 1200 seconds (20 minutes)
 DEFAULT_PORT = 8883
 DEFAULT_TOPIC = 'ble/gateway/data'
-DEFAULT_CLIENT_ID = 'ble-gateway-001'
+DEFAULT_CLIENT_ID_PREFIX = 'ble-gateway'
 DEFAULT_LOG_LEVEL = 'WARNING'
 
 # Connection timeouts
@@ -570,6 +570,20 @@ def get_gateway_mac_address() -> str:
         return '000000000000'
 
 
+def generate_default_client_id() -> str:
+    """Generate a default MQTT client ID from hostname and MAC address.
+
+    Format: ble-gateway-{hostname}-{last_6_of_mac}
+    The hostname is sanitized to lowercase alphanumeric and hyphens, truncated
+    to MAX_HOSTNAME_LENGTH characters.
+    """
+    hostname = platform.node() or 'unknown'
+    sanitized = ''.join(c if c.isalnum() else '-' for c in hostname.lower())
+    sanitized = sanitized.strip('-')[:MAX_HOSTNAME_LENGTH] or 'unknown'
+    mac_suffix = get_gateway_mac_address()[-6:]
+    return f"{DEFAULT_CLIENT_ID_PREFIX}-{sanitized}-{mac_suffix}"
+
+
 class BluetoothGateway:
     """Main Bluetooth Gateway application."""
 
@@ -643,8 +657,8 @@ class BluetoothGateway:
         broker = mqtt_config.get('broker')
         port = mqtt_config.get('port', DEFAULT_PORT)
 
-        # Client ID: Read directly from config
-        client_id = mqtt_config.get('client_id', DEFAULT_CLIENT_ID)
+        # Client ID: use configured value or generate from hostname + MAC suffix
+        client_id = mqtt_config.get('client_id') or generate_default_client_id()
         logger.info(f"Using client_id: {client_id}")
 
         self.topic = mqtt_config.get('topic', DEFAULT_TOPIC)
@@ -963,14 +977,15 @@ def load_config(config_path: str) -> dict:
     if not topic or not isinstance(topic, str):
         raise ValueError(f"MQTT topic must be a non-empty string, got: {topic}")
 
-    # Validate client_id format
-    client_id = mqtt_config.get('client_id', DEFAULT_CLIENT_ID)
-    if not client_id or not isinstance(client_id, str):
-        raise ValueError(f"MQTT client_id must be a non-empty string, got: {client_id}")
-    if len(client_id) > MAX_CLIENT_ID_LENGTH:
-        raise ValueError(
-            f"MQTT client_id too long (max {MAX_CLIENT_ID_LENGTH} chars): {len(client_id)} chars"
-        )
+    # Validate client_id format (only when explicitly provided; default is generated at runtime)
+    if 'client_id' in mqtt_config:
+        client_id = mqtt_config['client_id']
+        if not client_id or not isinstance(client_id, str):
+            raise ValueError(f"MQTT client_id must be a non-empty string, got: {client_id}")
+        if len(client_id) > MAX_CLIENT_ID_LENGTH:
+            raise ValueError(
+                f"MQTT client_id too long (max {MAX_CLIENT_ID_LENGTH} chars): {len(client_id)} chars"
+            )
 
     return config
 
