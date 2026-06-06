@@ -5,7 +5,7 @@ Captures Bluetooth Low Energy (BLE) advertisement packets and publishes them via
 Supports AWS IoT Core, Azure IoT Hub, HiveMQ, Mosquitto, and any MQTT broker.
 """
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 
 import argparse
 import asyncio

@@ -859,14 +859,12 @@ For issues and questions:
 
 ## Version History
 
-- **2.0.0** - Cloud-agnostic release
-  - Migrated to paho-mqtt for universal MQTT broker support
-  - Support for any MQTT broker (Mosquitto, HiveMQ, Azure IoT Hub, AWS IoT Core, etc.)
-  - Support for both certificate-based and username/password authentication
-  - Removed AWS-specific dependencies
+See [CHANGELOG.md](CHANGELOG.md) for the full, detailed history.
 
-- **1.0.0** - Initial release
-  - BLE scanning and MQTT publishing
+- **1.0.0** - Initial public release
+  - BLE scanning and publishing to any MQTT broker (Mosquitto, HiveMQ, Azure IoT Hub, AWS IoT Core, etc.)
+  - Both certificate-based (TLS) and username/password authentication
   - Throttle control and payload filtering
-  - Configurable intervals and whitelists
+  - Configurable upload intervals and device whitelists
   - Verbose and debug modes
+  - Systemd service integration
