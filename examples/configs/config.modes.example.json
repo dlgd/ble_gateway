@@ -47,5 +47,17 @@
     "throttle_control": true,
     "max_buffer_size": 20,
     "_behavior": "Continuous scanning, send once per minute, very low power consumption"
+  },
+
+  "low_load_dense_rf_mode": {
+    "_description": "Stabilize the BLE controller in dense RF environments (50-100+ advertisers)",
+    "scanning_mode": "passive",
+    "duplicate_filtering": true,
+    "service_uuid_whitelist": ["0000eff0-eff0-1212-1515-eeffd1024132"],
+    "manufacturer_id_whitelist": ["0xF0F0"],
+    "publish_interval_sec": 2.0,
+    "throttle_control": true,
+    "max_buffer_size": 100,
+    "_behavior": "Passive scan (no SCAN_REQ TX) + BlueZ or_patterns built from the whitelists, so the advertising-report flood is filtered below the Python layer. Both target advertising sets still received. See config.lowload.example.json for full details."
   }
 }

@@ -31,6 +31,19 @@ except ImportError:
     print("Error: bleak library not installed. Run: pip install bleak")
     sys.exit(1)
 
+# BlueZ passive-scanning / AdvertisementMonitor support (bleak >= 1.0, Linux only).
+# These imports are optional so the active-scan path keeps working on older bleak
+# versions or non-BlueZ backends. Passive mode and or_patterns require them.
+try:
+    from bleak.args.bluez import BlueZScannerArgs, OrPattern
+    from bleak.assigned_numbers import AdvertisementDataType
+    BLUEZ_OR_PATTERNS_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on installed bleak/platform
+    BlueZScannerArgs = None
+    OrPattern = None
+    AdvertisementDataType = None
+    BLUEZ_OR_PATTERNS_AVAILABLE = False
+
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
@@ -70,6 +83,13 @@ DEFAULT_TOPIC = 'ble/gateway/data'
 DEFAULT_CLIENT_ID_PREFIX = 'ble-gateway'
 DEFAULT_LOG_LEVEL = 'WARNING'
 
+# BLE scanning defaults.
+# scanning_mode defaults to "active" for full backward compatibility: when the
+# new key is absent, the gateway behaves exactly as before. The low-load profile
+# (passive + or_patterns) is opt-in via config; see examples/configs.
+DEFAULT_SCANNING_MODE = 'active'
+DEFAULT_DUPLICATE_FILTERING = True
+
 # Connection timeouts
 CONNECTION_TIMEOUT_SEC = 10
 DISCONNECT_TIMEOUT_SEC = 5
@@ -79,6 +99,7 @@ FLUSH_CHECK_INTERVAL_BUFFERED = 1.0
 
 # BLE packet structure constants
 BLE_UUID_TYPE_INCOMPLETE_128 = 0x06
+BLE_UUID_TYPE_COMPLETE_128 = 0x07  # AD type: complete list of 128-bit service UUIDs
 BLE_TYPE_MANUFACTURER_DATA = 0xFF
 BLE_TYPE_SERVICE_DATA_16BIT = 0x16
 
@@ -830,6 +851,83 @@ class BluetoothGateway:
                 self.logger.error(f"{ICON_ERROR} Error publishing message: {e}")
                 self.stats['publish_errors'] += 1
 
+    def _build_or_patterns(self) -> list:
+        """Build BlueZ AdvertisementMonitor or_patterns from the target signature.
+
+        or_patterns push filtering below the Python layer (into BlueZ and, where
+        the controller supports it, toward hardware), drastically cutting the
+        advertising-report flood that destabilizes the controller. A report is
+        delivered if it matches ANY pattern (logical OR).
+
+        Patterns are derived from existing whitelist config so behavior stays
+        consistent with active-scan filtering:
+          - service_uuid_whitelist  -> AD type 0x07 (complete 128-bit UUID list),
+            UUID encoded little-endian (BLE wire order).
+          - manufacturer_id_whitelist -> AD type 0xFF (manufacturer data), company
+            ID encoded little-endian as the first two payload bytes.
+
+        Advanced users may also supply explicit patterns via the top-level
+        `or_patterns` config key (list of {start_position, ad_data_type, value}
+        where value is a hex string).
+
+        Returns:
+            List of OrPattern. Empty if nothing could be derived.
+
+        Raises:
+            RuntimeError: if or_patterns are needed but this bleak build/platform
+                does not provide the BlueZ AdvertisementMonitor API.
+        """
+        if not BLUEZ_OR_PATTERNS_AVAILABLE:
+            raise RuntimeError(
+                "BlueZ or_patterns / passive scanning are not available in this "
+                "bleak build or platform. Requires bleak >= 1.0 on Linux/BlueZ."
+            )
+
+        patterns = []
+
+        # Service UUIDs (128-bit) -> complete UUID list AD type, little-endian bytes.
+        if self.payload_filter.service_uuid_whitelist:
+            for uuid_str in self.payload_filter.service_uuid_whitelist:
+                try:
+                    uuid_le = uuid.UUID(uuid_str).bytes[::-1]  # big-endian -> LE
+                except ValueError:
+                    self.logger.warning(
+                        f"{ICON_WARNING} Skipping invalid service UUID for "
+                        f"or_pattern: {uuid_str}"
+                    )
+                    continue
+                patterns.append(
+                    OrPattern(
+                        0,
+                        AdvertisementDataType.COMPLETE_LIST_SERVICE_UUID128,
+                        uuid_le,
+                    )
+                )
+
+        # Manufacturer IDs -> manufacturer data AD type, company ID little-endian.
+        if self.payload_filter.manufacturer_id_whitelist:
+            for company_id in self.payload_filter.manufacturer_id_whitelist:
+                cid_le = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF])
+                patterns.append(
+                    OrPattern(
+                        0,
+                        AdvertisementDataType.MANUFACTURER_SPECIFIC_DATA,
+                        cid_le,
+                    )
+                )
+
+        # Explicit, advanced patterns from config (optional override/extension).
+        for raw in self.config.get('or_patterns', []) or []:
+            patterns.append(
+                OrPattern(
+                    int(raw['start_position']),
+                    AdvertisementDataType(int(raw['ad_data_type'])),
+                    bytes.fromhex(raw['value']),
+                )
+            )
+
+        return patterns
+
     async def run(self):
         """Run the gateway scanning loop."""
         self.logger.info("Starting Bluetooth Gateway")
@@ -849,32 +947,73 @@ class BluetoothGateway:
         scanner = None
 
         try:
-            # Build service UUID filter from whitelist (if configured)
-            # This provides hardware-level filtering at the Bluetooth controller
-            service_uuids = None
-            if self.payload_filter.service_uuid_whitelist:
-                service_uuids = list(self.payload_filter.service_uuid_whitelist)
-                self.logger.info(
-                    f"{ICON_INFO} Hardware-level filtering enabled for {len(service_uuids)} service UUID(s): "
-                    f"{service_uuids}"
-                )
+            scanning_mode = self.config.get('scanning_mode', DEFAULT_SCANNING_MODE)
+            duplicate_filtering = self.config.get(
+                'duplicate_filtering', DEFAULT_DUPLICATE_FILTERING
+            )
 
-            # Configure BlueZ-specific options (Linux/Raspberry Pi)
-            bluez_args = {}
+            # Adapter selection passes through to the BlueZ backend as a kwarg.
+            scanner_kwargs = {}
             if self.config.get('bluetooth_adapter'):
-                bluez_args['adapter'] = self.config['bluetooth_adapter']
+                scanner_kwargs['adapter'] = self.config['bluetooth_adapter']
                 self.logger.info(f"Using Bluetooth adapter: {self.config['bluetooth_adapter']}")
 
-            # Configure scanner with hardware-level service UUID filtering
+            # BlueZ-specific scanner args (or_patterns for passive, filters for active).
+            bluez_args = {}
+
+            if scanning_mode == "passive":
+                # Passive scanning stops the gateway emitting SCAN_REQ packets
+                # (less controller TX) and requires BlueZ or_patterns. We do NOT
+                # pass service_uuids here: bleak's host-level UUID filter
+                # (is_allowed_uuid) would otherwise drop the target's
+                # manufacturer-only (Coded PHY) advertisements. or_patterns carry
+                # the filtering instead, offloaded below the Python layer.
+                or_patterns = self._build_or_patterns()
+                if not or_patterns:
+                    raise RuntimeError(
+                        "scanning_mode 'passive' requires or_patterns, but none "
+                        "could be built. Configure service_uuid_whitelist and/or "
+                        "manufacturer_id_whitelist (or an explicit 'or_patterns')."
+                    )
+                bluez_args['or_patterns'] = or_patterns
+                service_uuids = None
+                self.logger.info(
+                    f"{ICON_INFO} Passive scan with {len(or_patterns)} or_pattern(s); "
+                    f"filtering offloaded to BlueZ AdvertisementMonitor"
+                )
+            else:
+                # Active scan (default, backward compatible). Keep hardware-level
+                # service UUID filtering at the controller via service_uuids.
+                service_uuids = None
+                if self.payload_filter.service_uuid_whitelist:
+                    service_uuids = list(self.payload_filter.service_uuid_whitelist)
+                    self.logger.info(
+                        f"{ICON_INFO} Hardware-level filtering enabled for {len(service_uuids)} service UUID(s): "
+                        f"{service_uuids}"
+                    )
+                # DuplicateData=False tells BlueZ to suppress duplicate report data
+                # (fewer host-ward reports). DuplicateData=True surfaces every
+                # advertisement. duplicate_filtering=True -> DuplicateData=False.
+                if BLUEZ_OR_PATTERNS_AVAILABLE:
+                    bluez_args['filters'] = {'DuplicateData': not duplicate_filtering}
+                self.logger.info(
+                    f"{ICON_INFO} Duplicate filtering: {duplicate_filtering}"
+                )
+
+            # Configure scanner. Passive mode needs typed BlueZScannerArgs; both
+            # modes pass adapter via kwargs.
+            if bluez_args and BLUEZ_OR_PATTERNS_AVAILABLE:
+                scanner_kwargs['bluez'] = BlueZScannerArgs(**bluez_args)
+
             scanner = BleakScanner(
                 detection_callback=self._detection_callback,
-                service_uuids=service_uuids,  # Hardware-level filtering
-                scanning_mode="active",
-                bluez=bluez_args if bluez_args else None
+                service_uuids=service_uuids,
+                scanning_mode=scanning_mode,
+                **scanner_kwargs
             )
 
             self.logger.info("Starting continuous BLE scanning...")
-            self.logger.info("Scanning mode: active")
+            self.logger.info(f"Scanning mode: {scanning_mode}")
             await scanner.start()
 
             # Use a reasonable sleep interval for stats logging
@@ -961,6 +1100,54 @@ def load_config(config_path: str) -> dict:
         if not isinstance(config['throttle_control'], bool):
             raise ValueError(
                 f"throttle_control must be a boolean, got: {config['throttle_control']}"
+            )
+
+    # Validate scanning mode (BLE controller load profile)
+    if 'scanning_mode' in config:
+        mode = config['scanning_mode']
+        if mode not in ('active', 'passive'):
+            raise ValueError(
+                f"scanning_mode must be 'active' or 'passive', got: {mode}"
+            )
+
+    if 'duplicate_filtering' in config:
+        if not isinstance(config['duplicate_filtering'], bool):
+            raise ValueError(
+                f"duplicate_filtering must be a boolean, got: {config['duplicate_filtering']}"
+            )
+
+    # Validate optional explicit or_patterns (advanced BlueZ AdvertisementMonitor)
+    if 'or_patterns' in config:
+        patterns = config['or_patterns']
+        if not isinstance(patterns, list):
+            raise ValueError(f"or_patterns must be a list, got: {patterns}")
+        for i, p in enumerate(patterns):
+            if not isinstance(p, dict) or not all(
+                k in p for k in ('start_position', 'ad_data_type', 'value')
+            ):
+                raise ValueError(
+                    f"or_patterns[{i}] must be an object with "
+                    f"'start_position', 'ad_data_type', and 'value' (hex string)"
+                )
+            try:
+                bytes.fromhex(p['value'])
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"or_patterns[{i}].value must be a hex string, got: {p['value']}"
+                ) from e
+
+    # Passive scanning is unusable without filtering patterns; fail fast at load.
+    if config.get('scanning_mode') == 'passive':
+        has_patterns = bool(
+            config.get('or_patterns')
+            or config.get('service_uuid_whitelist')
+            or config.get('manufacturer_id_whitelist')
+        )
+        if not has_patterns:
+            raise ValueError(
+                "scanning_mode 'passive' requires or_patterns. Provide "
+                "'service_uuid_whitelist', 'manufacturer_id_whitelist', and/or an "
+                "explicit 'or_patterns' list so BlueZ can filter advertisements."
             )
 
     # Validate MQTT configuration
