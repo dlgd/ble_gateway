@@ -27,6 +27,7 @@ try:
     from bleak import BleakScanner
     from bleak.backends.device import BLEDevice
     from bleak.backends.scanner import AdvertisementData
+    from bleak.exc import BleakError
 except ImportError:
     print("Error: bleak library not installed. Run: pip install bleak")
     sys.exit(1)
@@ -952,14 +953,18 @@ class BluetoothGateway:
                 'duplicate_filtering', DEFAULT_DUPLICATE_FILTERING
             )
 
-            # Adapter selection passes through to the BlueZ backend as a kwarg.
             scanner_kwargs = {}
-            if self.config.get('bluetooth_adapter'):
-                scanner_kwargs['adapter'] = self.config['bluetooth_adapter']
-                self.logger.info(f"Using Bluetooth adapter: {self.config['bluetooth_adapter']}")
-
-            # BlueZ-specific scanner args (or_patterns for passive, filters for active).
             bluez_args = {}
+
+            # Adapter selection: use the BlueZ kwarg path on Linux (avoids deprecation
+            # warning from passing 'adapter' directly to BleakScanner).
+            adapter = self.config.get('bluetooth_adapter')
+            if adapter:
+                self.logger.info(f"Using Bluetooth adapter: {adapter}")
+                if BLUEZ_OR_PATTERNS_AVAILABLE:
+                    bluez_args['adapter'] = adapter
+                else:
+                    scanner_kwargs['adapter'] = adapter  # non-BlueZ backends
 
             if scanning_mode == "passive":
                 # Passive scanning stops the gateway emitting SCAN_REQ packets
@@ -1000,8 +1005,6 @@ class BluetoothGateway:
                     f"{ICON_INFO} Duplicate filtering: {duplicate_filtering}"
                 )
 
-            # Configure scanner. Passive mode needs typed BlueZScannerArgs; both
-            # modes pass adapter via kwargs.
             if bluez_args and BLUEZ_OR_PATTERNS_AVAILABLE:
                 scanner_kwargs['bluez'] = BlueZScannerArgs(**bluez_args)
 
@@ -1014,7 +1017,37 @@ class BluetoothGateway:
 
             self.logger.info("Starting continuous BLE scanning...")
             self.logger.info(f"Scanning mode: {scanning_mode}")
-            await scanner.start()
+            try:
+                await scanner.start()
+            except BleakError as e:
+                if scanning_mode == "passive" and "passive scanning" in str(e):
+                    self.logger.warning(
+                        f"{ICON_WARNING} Passive scanning not supported on this system: {e}"
+                    )
+                    self.logger.warning(
+                        f"{ICON_WARNING} Falling back to active scanning mode"
+                    )
+                    # Rebuild scanner without passive-mode or_patterns
+                    active_kwargs = {k: v for k, v in scanner_kwargs.items() if k != 'bluez'}
+                    active_bluez_args = {}
+                    if adapter and BLUEZ_OR_PATTERNS_AVAILABLE:
+                        active_bluez_args['adapter'] = adapter
+                    if active_bluez_args and BLUEZ_OR_PATTERNS_AVAILABLE:
+                        active_kwargs['bluez'] = BlueZScannerArgs(**active_bluez_args)
+                    active_service_uuids = (
+                        list(self.payload_filter.service_uuid_whitelist)
+                        if self.payload_filter.service_uuid_whitelist else None
+                    )
+                    scanner = BleakScanner(
+                        detection_callback=self._detection_callback,
+                        service_uuids=active_service_uuids,
+                        scanning_mode="active",
+                        **active_kwargs
+                    )
+                    scanning_mode = "active"
+                    await scanner.start()
+                else:
+                    raise
 
             # Use a reasonable sleep interval for stats logging
             last_stats_time = time.time()
