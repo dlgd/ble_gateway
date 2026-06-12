@@ -187,49 +187,22 @@ sudo setcap cap_net_raw,cap_net_admin+eip venv/bin/python3
 
 ---
 
-### Hardware-Level Filtering (Optional Performance Optimization)
+### Hardware-Level Filtering (Service UUID whitelist)
 
-**Info**: The gateway supports hardware-level manufacturer ID filtering using BlueZ `or_patterns`. This is more efficient than application-level filtering but requires BlueZ experimental features.
+**Info**: When `service_uuid_whitelist` is configured, the gateway passes those UUIDs
+to BlueZ `SetDiscoveryFilter`, which filters at the controller level — only matching
+advertisements are delivered host-ward.
 
-**Current Behavior**:
-- The gateway automatically attempts hardware-level filtering when manufacturer ID filters are configured
-- If not available, it falls back to application-level filtering (which still works fine)
-
-**To Enable Hardware-Level Filtering** (optional):
-
-1. **Check BlueZ version** (requires >= 5.56):
-   ```bash
-   bluetoothctl --version
-   ```
-
-2. **Enable BlueZ experimental features**:
-
-   Edit the Bluetooth service configuration:
-   ```bash
-   sudo nano /etc/systemd/system/bluetooth.target.wants/bluetooth.service
-   ```
-
-   Find the line starting with `ExecStart=` and add `--experimental` flag:
-   ```
-   ExecStart=/usr/lib/bluetooth/bluetoothd --experimental
-   ```
-
-3. **Restart Bluetooth service**:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl restart bluetooth
-   ```
-
-4. **Verify** - Run the gateway and look for this log message:
-   ```
-   Hardware-level manufacturer filtering enabled (requires BlueZ experimental mode)
-   ```
-
-   Without the warning about "Falling back to active scanning"
+**To enable**: add target service UUIDs to the whitelist in `config.json`:
+```json
+{
+  "service_uuid_whitelist": ["0000180f-0000-1000-8000-00805f9b34fb"]
+}
+```
 
 **Benefits**:
-- Lower CPU usage (filtering done by Bluetooth hardware/driver)
-- More efficient battery usage on battery-powered devices
+- Lower CPU usage (filtering happens before reaching Python)
+- Fewer MQTT messages from unwanted devices
 - Reduced number of wakeups from Bluetooth controller
 
 **Note**: Application-level filtering works well for most use cases. Hardware-level filtering is only beneficial when scanning in high-traffic BLE environments.

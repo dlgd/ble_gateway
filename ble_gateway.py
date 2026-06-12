@@ -27,23 +27,19 @@ try:
     from bleak import BleakScanner
     from bleak.backends.device import BLEDevice
     from bleak.backends.scanner import AdvertisementData
-    from bleak.exc import BleakError
 except ImportError:
     print("Error: bleak library not installed. Run: pip install bleak")
     sys.exit(1)
 
-# BlueZ passive-scanning / AdvertisementMonitor support (bleak >= 1.0, Linux only).
-# These imports are optional so the active-scan path keeps working on older bleak
-# versions or non-BlueZ backends. Passive mode and or_patterns require them.
+# BlueZ scanner args (bleak >= 1.0, Linux only). Optional: active scan keeps
+# working on older bleak versions or non-BlueZ backends.
 try:
-    from bleak.args.bluez import BlueZScannerArgs, OrPattern
-    from bleak.assigned_numbers import AdvertisementDataType
-    BLUEZ_OR_PATTERNS_AVAILABLE = True
+    from bleak.args.bluez import BlueZScannerArgs
+
+    BLUEZ_SCANNER_ARGS_AVAILABLE = True
 except ImportError:  # pragma: no cover - depends on installed bleak/platform
     BlueZScannerArgs = None
-    OrPattern = None
-    AdvertisementDataType = None
-    BLUEZ_OR_PATTERNS_AVAILABLE = False
+    BLUEZ_SCANNER_ARGS_AVAILABLE = False
 
 try:
     import paho.mqtt.client as mqtt
@@ -55,13 +51,14 @@ except ImportError:
 # ANSI color codes for cross-platform colored output
 class Colors:
     """ANSI color codes for terminal output."""
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
+
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
 
 
 # Icons with colors for different log levels
@@ -69,7 +66,9 @@ ICON_SUCCESS = f"{Colors.GREEN}✓{Colors.RESET}"
 ICON_ERROR = f"{Colors.RED}✗{Colors.RESET}"
 ICON_WARNING = f"{Colors.YELLOW}⚠{Colors.RESET}"
 ICON_INFO = f"{Colors.BLUE}ℹ{Colors.RESET}"
-ICON_PUBLISH = f"{Colors.CYAN}{Colors.BOLD}⬆{Colors.RESET}"  # Larger upward arrow for publish
+ICON_PUBLISH = (
+    f"{Colors.CYAN}{Colors.BOLD}⬆{Colors.RESET}"  # Larger upward arrow for publish
+)
 ICON_RECEIVE = f"{Colors.CYAN}⬇{Colors.RESET}"  # Downward arrow for receive
 
 
@@ -80,15 +79,12 @@ DEFAULT_THROTTLE_CONTROL = True
 DEFAULT_QOS = 1
 DEFAULT_KEEPALIVE = 1200  # MQTT keepalive: 1200 seconds (20 minutes)
 DEFAULT_PORT = 8883
-DEFAULT_TOPIC = 'ble/gateway/data'
-DEFAULT_CLIENT_ID_PREFIX = 'ble-gateway'
-DEFAULT_LOG_LEVEL = 'WARNING'
+DEFAULT_TOPIC = "ble/gateway/data"
+DEFAULT_CLIENT_ID_PREFIX = "ble-gateway"
+DEFAULT_LOG_LEVEL = "WARNING"
 
-# BLE scanning defaults.
-# scanning_mode defaults to "active" for full backward compatibility: when the
-# new key is absent, the gateway behaves exactly as before. The low-load profile
-# (passive + or_patterns) is opt-in via config; see examples/configs.
-DEFAULT_SCANNING_MODE = 'active'
+# BLE scanning defaults. Active is the only supported scanning mode.
+DEFAULT_SCANNING_MODE = "active"
 DEFAULT_DUPLICATE_FILTERING = True
 
 # Connection timeouts
@@ -112,6 +108,7 @@ MAX_HOSTNAME_LENGTH = 20
 @dataclass
 class BLEMessage:
     """Structured BLE advertisement message."""
+
     timestamp_ms: int
     device_address: str
     device_name: Optional[str]
@@ -132,7 +129,7 @@ class BLEMessage:
         if self.service_uuids:
             for uuid_str in self.service_uuids:
                 # Remove hyphens and convert to bytes (little-endian for BLE)
-                uuid_hex = uuid_str.replace('-', '')
+                uuid_hex = uuid_str.replace("-", "")
                 uuid_bytes = bytes.fromhex(uuid_hex)
                 # Reverse for little-endian
                 uuid_bytes_le = uuid_bytes[::-1]
@@ -155,7 +152,7 @@ class BLEMessage:
 
         # Add service data (16-bit UUID service data)
         for uuid_str, data in self.service_data.items():
-            uuid_hex = uuid_str.replace('-', '')
+            uuid_hex = uuid_str.replace("-", "")
             uuid_bytes = bytes.fromhex(uuid_hex)
 
             # Length = 1 (type) + UUID bytes + data length
@@ -186,28 +183,25 @@ class BLEMessage:
         timestamp_sec = self.timestamp_ms / 1000.0
 
         # Remove colons from device MAC address
-        device_mac = self.device_address.replace(':', '').upper()
+        device_mac = self.device_address.replace(":", "").upper()
 
         # Build GPRP CSV line
         gprp_line = f"$GPRP,{gateway_mac},{device_mac},{self.rssi},{advertising_hex},{timestamp_sec:.3f}"
 
         # Wrap in JSON structure
-        return json.dumps({
-            "data": [gprp_line],
-            "mqtt_topic": topic
-        }, separators=(',', ':'))
+        return json.dumps(
+            {"data": [gprp_line], "mqtt_topic": topic}, separators=(",", ":")
+        )
 
     def to_json(self) -> str:
         """Convert to JSON string with hex-encoded bytes."""
         data = asdict(self)
         # Convert bytes to hex strings
-        data['manufacturer_data'] = {
+        data["manufacturer_data"] = {
             str(k): v.hex() for k, v in self.manufacturer_data.items()
         }
-        data['service_data'] = {
-            k: v.hex() for k, v in self.service_data.items()
-        }
-        return json.dumps(data, separators=(',', ':'))
+        data["service_data"] = {k: v.hex() for k, v in self.service_data.items()}
+        return json.dumps(data, separators=(",", ":"))
 
 
 class MessageBuffer:
@@ -223,14 +217,20 @@ class MessageBuffer:
 
     Uses __slots__ for memory efficiency on Raspberry Pi.
     """
-    __slots__ = ('publish_interval_sec', 'max_buffer_size', 'throttle_control',
-                 'buffer', 'last_flush_time')
+
+    __slots__ = (
+        "publish_interval_sec",
+        "max_buffer_size",
+        "throttle_control",
+        "buffer",
+        "last_flush_time",
+    )
 
     def __init__(
         self,
         publish_interval_sec: float = DEFAULT_PUBLISH_INTERVAL,
         max_buffer_size: int = DEFAULT_MAX_BUFFER_SIZE,
-        throttle_control: bool = DEFAULT_THROTTLE_CONTROL
+        throttle_control: bool = DEFAULT_THROTTLE_CONTROL,
     ):
         self.publish_interval_sec = publish_interval_sec
         self.max_buffer_size = max_buffer_size
@@ -298,15 +298,20 @@ class PayloadFilter:
 
     Uses __slots__ for memory efficiency on Raspberry Pi.
     """
-    __slots__ = ('mac_whitelist', 'name_whitelist', 'manufacturer_id_whitelist',
-                 'service_uuid_whitelist')
+
+    __slots__ = (
+        "mac_whitelist",
+        "name_whitelist",
+        "manufacturer_id_whitelist",
+        "service_uuid_whitelist",
+    )
 
     def __init__(
         self,
         mac_whitelist: Optional[Set[str]] = None,
         name_whitelist: Optional[Set[str]] = None,
         manufacturer_id_whitelist: Optional[Set[int]] = None,
-        service_uuid_whitelist: Optional[Set[str]] = None
+        service_uuid_whitelist: Optional[Set[str]] = None,
     ):
         self.mac_whitelist = mac_whitelist
         self.name_whitelist = name_whitelist
@@ -314,18 +319,18 @@ class PayloadFilter:
         self.service_uuid_whitelist = service_uuid_whitelist
 
     def should_accept(
-        self,
-        device: BLEDevice,
-        advertisement: AdvertisementData
+        self, device: BLEDevice, advertisement: AdvertisementData
     ) -> bool:
         """Check if device matches any whitelist criteria."""
         # If no whitelists configured, accept all
-        if not any([
-            self.mac_whitelist,
-            self.name_whitelist,
-            self.manufacturer_id_whitelist,
-            self.service_uuid_whitelist
-        ]):
+        if not any(
+            [
+                self.mac_whitelist,
+                self.name_whitelist,
+                self.manufacturer_id_whitelist,
+                self.service_uuid_whitelist,
+            ]
+        ):
             return True
 
         # Check MAC address
@@ -338,14 +343,18 @@ class PayloadFilter:
 
         # Check manufacturer IDs
         if self.manufacturer_id_whitelist and advertisement.manufacturer_data:
-            if any(mid in self.manufacturer_id_whitelist
-                   for mid in advertisement.manufacturer_data.keys()):
+            if any(
+                mid in self.manufacturer_id_whitelist
+                for mid in advertisement.manufacturer_data.keys()
+            ):
                 return True
 
         # Check service UUIDs
         if self.service_uuid_whitelist and advertisement.service_uuids:
-            if any(uuid in self.service_uuid_whitelist
-                   for uuid in advertisement.service_uuids):
+            if any(
+                uuid in self.service_uuid_whitelist
+                for uuid in advertisement.service_uuids
+            ):
                 return True
 
         return False
@@ -376,7 +385,7 @@ class MQTTPublisher:
         tls_config: Optional[Dict] = None,
         credentials: Optional[Dict] = None,
         qos: int = DEFAULT_QOS,
-        keepalive: int = DEFAULT_KEEPALIVE
+        keepalive: int = DEFAULT_KEEPALIVE,
     ):
         self.broker = broker
         self.port = port
@@ -403,9 +412,9 @@ class MQTTPublisher:
 
     def _configure_mtls(self, tls_config: Dict) -> None:
         """Configure mutual TLS authentication."""
-        ca_certs = tls_config.get('ca_certs')
-        certfile = tls_config.get('certfile')
-        keyfile = tls_config.get('keyfile')
+        ca_certs = tls_config.get("ca_certs")
+        certfile = tls_config.get("certfile")
+        keyfile = tls_config.get("keyfile")
 
         if not all([ca_certs, certfile, keyfile]):
             raise ValueError("mtls auth requires ca_certs, certfile, and keyfile")
@@ -424,20 +433,24 @@ class MQTTPublisher:
 
     def _configure_userpass(self, credentials: Dict) -> None:
         """Configure username/password authentication."""
-        self.username = credentials.get('username')
-        self.password = credentials.get('password')
+        self.username = credentials.get("username")
+        self.password = credentials.get("password")
 
         if not self.username:
             raise ValueError("userpass auth requires username")
 
-        self.logger.info(f"Configured username/password authentication for user: {self.username}")
+        self.logger.info(
+            f"Configured username/password authentication for user: {self.username}"
+        )
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         """Callback when connection is established."""
         if rc == 0:
             self.connected = True
             self.connection_event.set()
-            self.logger.info(f"{ICON_SUCCESS} Successfully connected to MQTT broker: {self.broker}:{self.port}")
+            self.logger.info(
+                f"{ICON_SUCCESS} Successfully connected to MQTT broker: {self.broker}:{self.port}"
+            )
         else:
             self.connected = False
             error_messages = {
@@ -445,7 +458,7 @@ class MQTTPublisher:
                 2: "Connection refused - invalid client identifier",
                 3: "Connection refused - server unavailable",
                 4: "Connection refused - bad username or password",
-                5: "Connection refused - not authorized"
+                5: "Connection refused - not authorized",
             }
             error_msg = error_messages.get(rc, f"Unknown error code: {rc}")
             self.logger.error(f"{ICON_ERROR} Connection failed: {error_msg}")
@@ -458,14 +471,16 @@ class MQTTPublisher:
         # In paho-mqtt v2.0+, rc is a ReasonCode object; in v1.x it's an int
         # Convert to int for comparison
         try:
-            rc_value = int(rc) if hasattr(rc, '__int__') else rc
+            rc_value = int(rc) if hasattr(rc, "__int__") else rc
         except (ValueError, TypeError):
             rc_value = -1
 
         if rc_value != 0:
             # Get human-readable error message
-            rc_str = str(rc) if hasattr(rc, '__str__') else f"code {rc_value}"
-            self.logger.warning(f"{ICON_WARNING} Unexpected disconnection (rc={rc_str}), will auto-reconnect")
+            rc_str = str(rc) if hasattr(rc, "__str__") else f"code {rc_value}"
+            self.logger.warning(
+                f"{ICON_WARNING} Unexpected disconnection (rc={rc_str}), will auto-reconnect"
+            )
         else:
             self.logger.info("Disconnected from MQTT broker")
 
@@ -483,14 +498,11 @@ class MQTTPublisher:
                 self.client = mqtt.Client(
                     callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                     client_id=self.client_id,
-                    clean_session=True
+                    clean_session=True,
                 )
             except TypeError:
                 # Fallback for older paho-mqtt versions
-                self.client = mqtt.Client(
-                    client_id=self.client_id,
-                    clean_session=True
-                )
+                self.client = mqtt.Client(client_id=self.client_id, clean_session=True)
 
             # Set callbacks
             self.client.on_connect = self._on_connect
@@ -503,7 +515,7 @@ class MQTTPublisher:
                     ca_certs=self.ca_filepath,
                     certfile=self.cert_filepath,
                     keyfile=self.key_filepath,
-                    tls_version=ssl.PROTOCOL_TLSv1_2
+                    tls_version=ssl.PROTOCOL_TLSv1_2,
                 )
             elif self.auth_type == "userpass":
                 self.client.username_pw_set(self.username, self.password)
@@ -521,12 +533,13 @@ class MQTTPublisher:
             # Wait for connection with timeout
             try:
                 await asyncio.wait_for(
-                    self.connection_event.wait(),
-                    timeout=CONNECTION_TIMEOUT_SEC
+                    self.connection_event.wait(), timeout=CONNECTION_TIMEOUT_SEC
                 )
                 return True
             except asyncio.TimeoutError:
-                self.logger.error(f"{ICON_ERROR} Connection timeout after {CONNECTION_TIMEOUT_SEC}s")
+                self.logger.error(
+                    f"{ICON_ERROR} Connection timeout after {CONNECTION_TIMEOUT_SEC}s"
+                )
                 return False
 
         except Exception as e:
@@ -542,10 +555,7 @@ class MQTTPublisher:
 
             # Publish message (will queue if disconnected)
             result = self.client.publish(
-                topic=self.topic,
-                payload=message,
-                qos=self.qos,
-                retain=False
+                topic=self.topic, payload=message, qos=self.qos, retain=False
             )
 
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
@@ -585,11 +595,11 @@ def get_gateway_mac_address() -> str:
         # Get MAC address from the node's UUID
         mac = uuid.getnode()
         # Convert to hex string with leading zeros (48 bits = 12 hex chars)
-        mac_hex = f'{mac:012x}'.upper()
+        mac_hex = f"{mac:012x}".upper()
         return mac_hex
     except Exception:
         # Fallback to all zeros if unable to get MAC
-        return '000000000000'
+        return "000000000000"
 
 
 def generate_default_client_id() -> str:
@@ -599,9 +609,9 @@ def generate_default_client_id() -> str:
     The hostname is sanitized to lowercase alphanumeric and hyphens, truncated
     to MAX_HOSTNAME_LENGTH characters.
     """
-    hostname = platform.node() or 'unknown'
-    sanitized = ''.join(c if c.isalnum() else '-' for c in hostname.lower())
-    sanitized = sanitized.strip('-')[:MAX_HOSTNAME_LENGTH] or 'unknown'
+    hostname = platform.node() or "unknown"
+    sanitized = "".join(c if c.isalnum() else "-" for c in hostname.lower())
+    sanitized = sanitized.strip("-")[:MAX_HOSTNAME_LENGTH] or "unknown"
     mac_suffix = get_gateway_mac_address()[-6:]
     return f"{DEFAULT_CLIENT_ID_PREFIX}-{sanitized}-{mac_suffix}"
 
@@ -630,76 +640,83 @@ class BluetoothGateway:
                 try:
                     parsed_ids.add(int(mid, 16))
                 except ValueError:
-                    raise ValueError(f"Invalid manufacturer ID format: {mid}. Use decimal (76) or hex ('0x004C')")
+                    raise ValueError(
+                        f"Invalid manufacturer ID format: {mid}. Use decimal (76) or hex ('0x004C')"
+                    )
             elif isinstance(mid, int):
                 # Already an integer
                 parsed_ids.add(mid)
             else:
-                raise ValueError(f"Invalid manufacturer ID type: {type(mid)}. Expected int or hex string")
+                raise ValueError(
+                    f"Invalid manufacturer ID type: {type(mid)}. Expected int or hex string"
+                )
 
         return parsed_ids
 
-    def __init__(
-        self,
-        config: dict,
-        logger: logging.Logger
-    ):
+    def __init__(self, config: dict, logger: logging.Logger):
         self.config = config
         self.logger = logger
 
         # Gateway MAC address for GPRP format
         # If not configured, use the actual MAC address of this device
-        configured_mac = config.get('gateway_mac')
+        configured_mac = config.get("gateway_mac")
         if configured_mac:
-            self.gateway_mac = configured_mac.replace(':', '').upper()
+            self.gateway_mac = configured_mac.replace(":", "").upper()
             self.logger.debug(f"Using configured gateway MAC: {self.gateway_mac}")
         else:
             self.gateway_mac = get_gateway_mac_address()
-            self.logger.info(f"{ICON_INFO} Using device MAC address as gateway MAC: {self.gateway_mac}")
+            self.logger.info(
+                f"{ICON_INFO} Using device MAC address as gateway MAC: {self.gateway_mac}"
+            )
 
         # Initialize message buffer with publish interval and throttle control
         self.message_buffer = MessageBuffer(
-            publish_interval_sec=config.get('publish_interval_sec', DEFAULT_PUBLISH_INTERVAL),
-            max_buffer_size=config.get('max_buffer_size', DEFAULT_MAX_BUFFER_SIZE),
-            throttle_control=config.get('throttle_control', DEFAULT_THROTTLE_CONTROL)
+            publish_interval_sec=config.get(
+                "publish_interval_sec", DEFAULT_PUBLISH_INTERVAL
+            ),
+            max_buffer_size=config.get("max_buffer_size", DEFAULT_MAX_BUFFER_SIZE),
+            throttle_control=config.get("throttle_control", DEFAULT_THROTTLE_CONTROL),
         )
 
         # Build payload filter
         self.payload_filter = PayloadFilter(
-            mac_whitelist=set(map(str.upper, config.get('mac_whitelist', []))) or None,
-            name_whitelist=set(config.get('name_whitelist', [])) or None,
-            manufacturer_id_whitelist=self._parse_manufacturer_ids(config.get('manufacturer_id_whitelist', [])),
-            service_uuid_whitelist=set(config.get('service_uuid_whitelist', [])) or None
+            mac_whitelist=set(map(str.upper, config.get("mac_whitelist", []))) or None,
+            name_whitelist=set(config.get("name_whitelist", [])) or None,
+            manufacturer_id_whitelist=self._parse_manufacturer_ids(
+                config.get("manufacturer_id_whitelist", [])
+            ),
+            service_uuid_whitelist=set(config.get("service_uuid_whitelist", []))
+            or None,
         )
 
         # Initialize MQTT publisher
-        mqtt_config = config.get('mqtt', {})
+        mqtt_config = config.get("mqtt", {})
 
         # Extract MQTT settings
-        broker = mqtt_config.get('broker')
-        port = mqtt_config.get('port', DEFAULT_PORT)
+        broker = mqtt_config.get("broker")
+        port = mqtt_config.get("port", DEFAULT_PORT)
 
         # Client ID: use configured value or generate from hostname + MAC suffix
-        client_id = mqtt_config.get('client_id') or generate_default_client_id()
+        client_id = mqtt_config.get("client_id") or generate_default_client_id()
         logger.info(f"Using client_id: {client_id}")
 
-        self.topic = mqtt_config.get('topic', DEFAULT_TOPIC)
-        auth_type = mqtt_config.get('auth_type', 'mtls')
-        qos = mqtt_config.get('qos', DEFAULT_QOS)
-        keepalive = mqtt_config.get('keepalive', DEFAULT_KEEPALIVE)
-        
+        self.topic = mqtt_config.get("topic", DEFAULT_TOPIC)
+        auth_type = mqtt_config.get("auth_type", "mtls")
+        qos = mqtt_config.get("qos", DEFAULT_QOS)
+        keepalive = mqtt_config.get("keepalive", DEFAULT_KEEPALIVE)
+
         # Build TLS config for mTLS
         tls_config = None
-        if auth_type == 'mtls':
+        if auth_type == "mtls":
             tls_config = {
-                'ca_certs': mqtt_config.get('root_ca_path'),
-                'certfile': mqtt_config.get('cert_path'),
-                'keyfile': mqtt_config.get('key_path')
+                "ca_certs": mqtt_config.get("root_ca_path"),
+                "certfile": mqtt_config.get("cert_path"),
+                "keyfile": mqtt_config.get("key_path"),
             }
-        
+
         # Build credentials for userpass/token
-        credentials = mqtt_config.get('credentials')
-        
+        credentials = mqtt_config.get("credentials")
+
         self.publisher = MQTTPublisher(
             broker=broker,
             port=port,
@@ -710,17 +727,17 @@ class BluetoothGateway:
             tls_config=tls_config,
             credentials=credentials,
             qos=qos,
-            keepalive=keepalive
+            keepalive=keepalive,
         )
 
         self.running = False
         self.stats = {
-            'devices_seen': 0,
-            'messages_filtered': 0,
-            'messages_buffered': 0,
-            'messages_published': 0,
-            'publish_errors': 0,
-            'buffer_flushes': 0
+            "devices_seen": 0,
+            "messages_filtered": 0,
+            "messages_buffered": 0,
+            "messages_published": 0,
+            "publish_errors": 0,
+            "buffer_flushes": 0,
         }
 
         # Signal handlers for graceful shutdown
@@ -728,6 +745,7 @@ class BluetoothGateway:
 
     def _setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
+
         def signal_handler(signum, frame):
             self.logger.info(f"Received signal {signum}, shutting down gracefully...")
             self.running = False
@@ -736,9 +754,7 @@ class BluetoothGateway:
         signal.signal(signal.SIGTERM, signal_handler)
 
     def _create_ble_message(
-        self,
-        device: BLEDevice,
-        advertisement: AdvertisementData
+        self, device: BLEDevice, advertisement: AdvertisementData
     ) -> BLEMessage:
         """Create BLEMessage from device and advertisement data.
 
@@ -755,14 +771,10 @@ class BluetoothGateway:
             manufacturer_data=dict(advertisement.manufacturer_data),
             service_data=dict(advertisement.service_data),
             service_uuids=list(advertisement.service_uuids),
-            tx_power=advertisement.tx_power
+            tx_power=advertisement.tx_power,
         )
 
-    def _detection_callback(
-        self,
-        device: BLEDevice,
-        advertisement: AdvertisementData
-    ):
+    def _detection_callback(self, device: BLEDevice, advertisement: AdvertisementData):
         """
         Handle BLE device detection.
 
@@ -772,25 +784,32 @@ class BluetoothGateway:
         """
         # Apply payload filter first
         if not self.payload_filter.should_accept(device, advertisement):
-            self.stats['messages_filtered'] += 1
+            self.stats["messages_filtered"] += 1
             self.logger.debug(
-                f"Filtered device: {device.address} ({device.name}) - "
-                f"not in whitelist"
+                f"Filtered device: {device.address} ({device.name}) - not in whitelist"
             )
             return
 
-        self.stats['devices_seen'] += 1
+        self.stats["devices_seen"] += 1
 
         # Create BLE message and add to buffer
         try:
             ble_message = self._create_ble_message(device, advertisement)
             self.message_buffer.add_message(ble_message)
-            self.stats['messages_buffered'] += 1
+            self.stats["messages_buffered"] += 1
 
             # Debug log with full message details
             # Format manufacturer data as hex strings for readability
-            mfg_data_str = {k: v.hex() for k, v in advertisement.manufacturer_data.items()} if advertisement.manufacturer_data else {}
-            svc_data_str = {k: v.hex() for k, v in advertisement.service_data.items()} if advertisement.service_data else {}
+            mfg_data_str = (
+                {k: v.hex() for k, v in advertisement.manufacturer_data.items()}
+                if advertisement.manufacturer_data
+                else {}
+            )
+            svc_data_str = (
+                {k: v.hex() for k, v in advertisement.service_data.items()}
+                if advertisement.service_data
+                else {}
+            )
 
             self.logger.debug(
                 f"{ICON_RECEIVE} BLE message received - Device: {device.address} ({device.name}), "
@@ -803,7 +822,9 @@ class BluetoothGateway:
             )
 
         except Exception as e:
-            self.logger.error(f"{ICON_ERROR} Error processing device {device.address}: {e}")
+            self.logger.error(
+                f"{ICON_ERROR} Error processing device {device.address}: {e}"
+            )
 
     def _flush_buffer(self) -> None:
         """Flush buffered messages to MQTT broker."""
@@ -814,7 +835,7 @@ class BluetoothGateway:
         if not messages:
             return
 
-        self.stats['buffer_flushes'] += 1
+        self.stats["buffer_flushes"] += 1
 
         # Log flush event
         self.logger.info(
@@ -827,8 +848,7 @@ class BluetoothGateway:
         for ble_message in messages:
             try:
                 json_payload = ble_message.to_gprp_format(
-                    gateway_mac=self.gateway_mac,
-                    topic=self.topic
+                    gateway_mac=self.gateway_mac, topic=self.topic
                 )
 
                 # Debug log: show message being published
@@ -839,95 +859,18 @@ class BluetoothGateway:
                 )
 
                 if self.publisher.publish(json_payload):
-                    self.stats['messages_published'] += 1
+                    self.stats["messages_published"] += 1
                     self.logger.debug(
                         f"{ICON_SUCCESS} Successfully published message for device {ble_message.device_address}"
                     )
                 else:
-                    self.stats['publish_errors'] += 1
+                    self.stats["publish_errors"] += 1
                     self.logger.debug(
                         f"{ICON_ERROR} Failed to publish message for device {ble_message.device_address}"
                     )
             except Exception as e:
                 self.logger.error(f"{ICON_ERROR} Error publishing message: {e}")
-                self.stats['publish_errors'] += 1
-
-    def _build_or_patterns(self) -> list:
-        """Build BlueZ AdvertisementMonitor or_patterns from the target signature.
-
-        or_patterns push filtering below the Python layer (into BlueZ and, where
-        the controller supports it, toward hardware), drastically cutting the
-        advertising-report flood that destabilizes the controller. A report is
-        delivered if it matches ANY pattern (logical OR).
-
-        Patterns are derived from existing whitelist config so behavior stays
-        consistent with active-scan filtering:
-          - service_uuid_whitelist  -> AD type 0x07 (complete 128-bit UUID list),
-            UUID encoded little-endian (BLE wire order).
-          - manufacturer_id_whitelist -> AD type 0xFF (manufacturer data), company
-            ID encoded little-endian as the first two payload bytes.
-
-        Advanced users may also supply explicit patterns via the top-level
-        `or_patterns` config key (list of {start_position, ad_data_type, value}
-        where value is a hex string).
-
-        Returns:
-            List of OrPattern. Empty if nothing could be derived.
-
-        Raises:
-            RuntimeError: if or_patterns are needed but this bleak build/platform
-                does not provide the BlueZ AdvertisementMonitor API.
-        """
-        if not BLUEZ_OR_PATTERNS_AVAILABLE:
-            raise RuntimeError(
-                "BlueZ or_patterns / passive scanning are not available in this "
-                "bleak build or platform. Requires bleak >= 1.0 on Linux/BlueZ."
-            )
-
-        patterns = []
-
-        # Service UUIDs (128-bit) -> complete UUID list AD type, little-endian bytes.
-        if self.payload_filter.service_uuid_whitelist:
-            for uuid_str in self.payload_filter.service_uuid_whitelist:
-                try:
-                    uuid_le = uuid.UUID(uuid_str).bytes[::-1]  # big-endian -> LE
-                except ValueError:
-                    self.logger.warning(
-                        f"{ICON_WARNING} Skipping invalid service UUID for "
-                        f"or_pattern: {uuid_str}"
-                    )
-                    continue
-                patterns.append(
-                    OrPattern(
-                        0,
-                        AdvertisementDataType.COMPLETE_LIST_SERVICE_UUID128,
-                        uuid_le,
-                    )
-                )
-
-        # Manufacturer IDs -> manufacturer data AD type, company ID little-endian.
-        if self.payload_filter.manufacturer_id_whitelist:
-            for company_id in self.payload_filter.manufacturer_id_whitelist:
-                cid_le = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF])
-                patterns.append(
-                    OrPattern(
-                        0,
-                        AdvertisementDataType.MANUFACTURER_SPECIFIC_DATA,
-                        cid_le,
-                    )
-                )
-
-        # Explicit, advanced patterns from config (optional override/extension).
-        for raw in self.config.get('or_patterns', []) or []:
-            patterns.append(
-                OrPattern(
-                    int(raw['start_position']),
-                    AdvertisementDataType(int(raw['ad_data_type'])),
-                    bytes.fromhex(raw['value']),
-                )
-            )
-
-        return patterns
+                self.stats["publish_errors"] += 1
 
     async def run(self):
         """Run the gateway scanning loop."""
@@ -941,16 +884,18 @@ class BluetoothGateway:
 
         # Connect to MQTT broker
         if not await self.publisher.connect():
-            self.logger.error(f"{ICON_ERROR} Failed to connect to MQTT broker. Exiting.")
+            self.logger.error(
+                f"{ICON_ERROR} Failed to connect to MQTT broker. Exiting."
+            )
             return
 
         self.running = True
         scanner = None
 
         try:
-            scanning_mode = self.config.get('scanning_mode', DEFAULT_SCANNING_MODE)
+            scanning_mode = self.config.get("scanning_mode", DEFAULT_SCANNING_MODE)
             duplicate_filtering = self.config.get(
-                'duplicate_filtering', DEFAULT_DUPLICATE_FILTERING
+                "duplicate_filtering", DEFAULT_DUPLICATE_FILTERING
             )
 
             scanner_kwargs = {}
@@ -958,96 +903,42 @@ class BluetoothGateway:
 
             # Adapter selection: use the BlueZ kwarg path on Linux (avoids deprecation
             # warning from passing 'adapter' directly to BleakScanner).
-            adapter = self.config.get('bluetooth_adapter')
+            adapter = self.config.get("bluetooth_adapter")
             if adapter:
                 self.logger.info(f"Using Bluetooth adapter: {adapter}")
-                if BLUEZ_OR_PATTERNS_AVAILABLE:
-                    bluez_args['adapter'] = adapter
+                if BLUEZ_SCANNER_ARGS_AVAILABLE:
+                    bluez_args["adapter"] = adapter
                 else:
-                    scanner_kwargs['adapter'] = adapter  # non-BlueZ backends
+                    scanner_kwargs["adapter"] = adapter  # non-BlueZ backends
 
-            if scanning_mode == "passive":
-                # Passive scanning stops the gateway emitting SCAN_REQ packets
-                # (less controller TX) and requires BlueZ or_patterns. We do NOT
-                # pass service_uuids here: bleak's host-level UUID filter
-                # (is_allowed_uuid) would otherwise drop the target's
-                # manufacturer-only (Coded PHY) advertisements. or_patterns carry
-                # the filtering instead, offloaded below the Python layer.
-                or_patterns = self._build_or_patterns()
-                if not or_patterns:
-                    raise RuntimeError(
-                        "scanning_mode 'passive' requires or_patterns, but none "
-                        "could be built. Configure service_uuid_whitelist and/or "
-                        "manufacturer_id_whitelist (or an explicit 'or_patterns')."
-                    )
-                bluez_args['or_patterns'] = or_patterns
-                service_uuids = None
+            # Active scanning: hardware-level service UUID filtering via SetDiscoveryFilter.
+            service_uuids = None
+            if self.payload_filter.service_uuid_whitelist:
+                service_uuids = list(self.payload_filter.service_uuid_whitelist)
                 self.logger.info(
-                    f"{ICON_INFO} Passive scan with {len(or_patterns)} or_pattern(s); "
-                    f"filtering offloaded to BlueZ AdvertisementMonitor"
+                    f"{ICON_INFO} Hardware-level filtering enabled for {len(service_uuids)} service UUID(s): "
+                    f"{service_uuids}"
                 )
-            else:
-                # Active scan (default, backward compatible). Keep hardware-level
-                # service UUID filtering at the controller via service_uuids.
-                service_uuids = None
-                if self.payload_filter.service_uuid_whitelist:
-                    service_uuids = list(self.payload_filter.service_uuid_whitelist)
-                    self.logger.info(
-                        f"{ICON_INFO} Hardware-level filtering enabled for {len(service_uuids)} service UUID(s): "
-                        f"{service_uuids}"
-                    )
-                # DuplicateData=False tells BlueZ to suppress duplicate report data
-                # (fewer host-ward reports). DuplicateData=True surfaces every
-                # advertisement. duplicate_filtering=True -> DuplicateData=False.
-                if BLUEZ_OR_PATTERNS_AVAILABLE:
-                    bluez_args['filters'] = {'DuplicateData': not duplicate_filtering}
-                self.logger.info(
-                    f"{ICON_INFO} Duplicate filtering: {duplicate_filtering}"
-                )
+            # DuplicateData=False tells BlueZ to suppress duplicate report data
+            # (fewer host-ward reports). DuplicateData=True surfaces every
+            # advertisement. duplicate_filtering=True -> DuplicateData=False.
+            if BLUEZ_SCANNER_ARGS_AVAILABLE:
+                bluez_args["filters"] = {"DuplicateData": not duplicate_filtering}
+            self.logger.info(f"{ICON_INFO} Duplicate filtering: {duplicate_filtering}")
 
-            if bluez_args and BLUEZ_OR_PATTERNS_AVAILABLE:
-                scanner_kwargs['bluez'] = BlueZScannerArgs(**bluez_args)
+            if bluez_args and BLUEZ_SCANNER_ARGS_AVAILABLE:
+                scanner_kwargs["bluez"] = BlueZScannerArgs(**bluez_args)
 
             scanner = BleakScanner(
                 detection_callback=self._detection_callback,
                 service_uuids=service_uuids,
                 scanning_mode=scanning_mode,
-                **scanner_kwargs
+                **scanner_kwargs,
             )
 
             self.logger.info("Starting continuous BLE scanning...")
             self.logger.info(f"Scanning mode: {scanning_mode}")
-            try:
-                await scanner.start()
-            except BleakError as e:
-                if scanning_mode == "passive" and "passive scanning" in str(e):
-                    self.logger.warning(
-                        f"{ICON_WARNING} Passive scanning not supported on this system: {e}"
-                    )
-                    self.logger.warning(
-                        f"{ICON_WARNING} Falling back to active scanning mode"
-                    )
-                    # Rebuild scanner without passive-mode or_patterns
-                    active_kwargs = {k: v for k, v in scanner_kwargs.items() if k != 'bluez'}
-                    active_bluez_args = {}
-                    if adapter and BLUEZ_OR_PATTERNS_AVAILABLE:
-                        active_bluez_args['adapter'] = adapter
-                    if active_bluez_args and BLUEZ_OR_PATTERNS_AVAILABLE:
-                        active_kwargs['bluez'] = BlueZScannerArgs(**active_bluez_args)
-                    active_service_uuids = (
-                        list(self.payload_filter.service_uuid_whitelist)
-                        if self.payload_filter.service_uuid_whitelist else None
-                    )
-                    scanner = BleakScanner(
-                        detection_callback=self._detection_callback,
-                        service_uuids=active_service_uuids,
-                        scanning_mode="active",
-                        **active_kwargs
-                    )
-                    scanning_mode = "active"
-                    await scanner.start()
-                else:
-                    raise
+            await scanner.start()
 
             # Use a reasonable sleep interval for stats logging
             last_stats_time = time.time()
@@ -1085,7 +976,9 @@ class BluetoothGateway:
         except KeyboardInterrupt:
             self.logger.info(f"{ICON_INFO} Received shutdown signal")
         except Exception as e:
-            self.logger.error(f"{ICON_ERROR} Error in scanning loop: {e}", exc_info=True)
+            self.logger.error(
+                f"{ICON_ERROR} Error in scanning loop: {e}", exc_info=True
+            )
         finally:
             # Flush any remaining messages before shutdown
             self.logger.info("Flushing remaining messages before shutdown...")
@@ -1107,7 +1000,7 @@ class BluetoothGateway:
 def load_config(config_path: str) -> dict:
     """Load and validate configuration from JSON file."""
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Configuration file not found: {config_path}") from e
@@ -1115,93 +1008,70 @@ def load_config(config_path: str) -> dict:
         raise ValueError(f"Invalid JSON in configuration file: {e}") from e
 
     # Validate configuration values
-    if 'publish_interval_sec' in config:
-        interval = config['publish_interval_sec']
+    if "publish_interval_sec" in config:
+        interval = config["publish_interval_sec"]
         if not isinstance(interval, (int, float)) or interval < 0:
             raise ValueError(
                 f"publish_interval_sec must be a non-negative number, got: {interval}"
             )
 
-    if 'max_buffer_size' in config:
-        size = config['max_buffer_size']
+    if "max_buffer_size" in config:
+        size = config["max_buffer_size"]
         if not isinstance(size, int) or size < 1:
-            raise ValueError(
-                f"max_buffer_size must be a positive integer, got: {size}"
-            )
+            raise ValueError(f"max_buffer_size must be a positive integer, got: {size}")
 
-    if 'throttle_control' in config:
-        if not isinstance(config['throttle_control'], bool):
+    if "throttle_control" in config:
+        if not isinstance(config["throttle_control"], bool):
             raise ValueError(
                 f"throttle_control must be a boolean, got: {config['throttle_control']}"
             )
 
-    # Validate scanning mode (BLE controller load profile)
-    if 'scanning_mode' in config:
-        mode = config['scanning_mode']
-        if mode not in ('active', 'passive'):
-            raise ValueError(
-                f"scanning_mode must be 'active' or 'passive', got: {mode}"
+    # Validate scanning mode. Only active is supported; coerce passive for back-compat.
+    if "scanning_mode" in config:
+        mode = config["scanning_mode"]
+        if mode == "passive":
+            logging.getLogger("BLEGateway").warning(
+                "scanning_mode 'passive' is no longer supported; using active — "
+                "the target advertises via extended advertising which passive cannot receive"
             )
+            config["scanning_mode"] = "active"
+        elif mode != "active":
+            raise ValueError(f"scanning_mode must be 'active', got: {mode}")
 
-    if 'duplicate_filtering' in config:
-        if not isinstance(config['duplicate_filtering'], bool):
+    if "duplicate_filtering" in config:
+        if not isinstance(config["duplicate_filtering"], bool):
             raise ValueError(
                 f"duplicate_filtering must be a boolean, got: {config['duplicate_filtering']}"
             )
 
-    # Validate optional explicit or_patterns (advanced BlueZ AdvertisementMonitor)
-    if 'or_patterns' in config:
-        patterns = config['or_patterns']
-        if not isinstance(patterns, list):
-            raise ValueError(f"or_patterns must be a list, got: {patterns}")
-        for i, p in enumerate(patterns):
-            if not isinstance(p, dict) or not all(
-                k in p for k in ('start_position', 'ad_data_type', 'value')
-            ):
-                raise ValueError(
-                    f"or_patterns[{i}] must be an object with "
-                    f"'start_position', 'ad_data_type', and 'value' (hex string)"
-                )
-            try:
-                bytes.fromhex(p['value'])
-            except (ValueError, TypeError) as e:
-                raise ValueError(
-                    f"or_patterns[{i}].value must be a hex string, got: {p['value']}"
-                ) from e
-
-    # Passive scanning is unusable without filtering patterns; fail fast at load.
-    if config.get('scanning_mode') == 'passive':
-        has_patterns = bool(
-            config.get('or_patterns')
-            or config.get('service_uuid_whitelist')
-            or config.get('manufacturer_id_whitelist')
+    # or_patterns was used by the removed passive scanning mode. Warn and ignore.
+    if "or_patterns" in config:
+        logging.getLogger("BLEGateway").warning(
+            "Config key 'or_patterns' is no longer used (passive scanning has been "
+            "removed); the key is ignored"
         )
-        if not has_patterns:
-            raise ValueError(
-                "scanning_mode 'passive' requires or_patterns. Provide "
-                "'service_uuid_whitelist', 'manufacturer_id_whitelist', and/or an "
-                "explicit 'or_patterns' list so BlueZ can filter advertisements."
-            )
 
     # Validate MQTT configuration
-    mqtt_config = config.get('mqtt')
+    mqtt_config = config.get("mqtt")
     if not mqtt_config:
         raise ValueError("Configuration must include 'mqtt' section")
 
     # Validate required MQTT fields
-    if 'broker' not in mqtt_config:
+    if "broker" not in mqtt_config:
         raise ValueError("MQTT configuration must include 'broker'")
 
     # Validate topic format
-    topic = mqtt_config.get('topic', DEFAULT_TOPIC)
+    topic = mqtt_config.get("topic", DEFAULT_TOPIC)
     if not topic or not isinstance(topic, str):
         raise ValueError(f"MQTT topic must be a non-empty string, got: {topic}")
 
     # Validate client_id format (only when explicitly provided; default is generated at runtime)
-    if 'client_id' in mqtt_config:
-        client_id = mqtt_config['client_id']
+    if "client_id" in mqtt_config:
+        client_id = mqtt_config["client_id"]
         if not client_id or not isinstance(client_id, str):
-            raise ValueError(f"MQTT client_id must be a non-empty string, got: {client_id}")
+            raise ValueError(
+                f"MQTT client_id must be a non-empty string, got: {client_id}"
+            )
         if len(client_id) > MAX_CLIENT_ID_LENGTH:
             raise ValueError(
                 f"MQTT client_id too long (max {MAX_CLIENT_ID_LENGTH} chars): {len(client_id)} chars"
@@ -1210,7 +1080,7 @@ def load_config(config_path: str) -> dict:
     return config
 
 
-def setup_logging(log_level: str = 'WARNING') -> logging.Logger:
+def setup_logging(log_level: str = "WARNING") -> logging.Logger:
     """Configure logging with appropriate level.
 
     Args:
@@ -1219,7 +1089,7 @@ def setup_logging(log_level: str = 'WARNING') -> logging.Logger:
     Returns:
         Configured logger instance
     """
-    logger = logging.getLogger('BLEGateway')
+    logger = logging.getLogger("BLEGateway")
 
     # Convert string to logging level
     numeric_level = getattr(logging, log_level.upper(), logging.WARNING)
@@ -1230,8 +1100,8 @@ def setup_logging(log_level: str = 'WARNING') -> logging.Logger:
     handler.setLevel(numeric_level)
 
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
 
@@ -1243,7 +1113,7 @@ def setup_logging(log_level: str = 'WARNING') -> logging.Logger:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Bluetooth Gateway for MQTT',
+        description="Bluetooth Gateway for MQTT",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1257,39 +1127,33 @@ Examples:
   %(prog)s -c config.json --log-level DEBUG
 
 Configuration file format: See config.example.json
-        """
+        """,
     )
 
     parser.add_argument(
-        '-c', '--config',
-        required=True,
-        help='Path to configuration JSON file'
+        "-c", "--config", required=True, help="Path to configuration JSON file"
     )
 
     parser.add_argument(
-        '--log-level',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default=DEFAULT_LOG_LEVEL,
-        help=f'Set logging level (default: {DEFAULT_LOG_LEVEL})'
+        help=f"Set logging level (default: {DEFAULT_LOG_LEVEL})",
     )
 
     parser.add_argument(
-        '--publish-interval',
+        "--publish-interval",
         type=float,
-        help='Override publish interval in seconds (0=immediate, >0=buffered)'
+        help="Override publish interval in seconds (0=immediate, >0=buffered)",
     )
 
     parser.add_argument(
-        '--no-throttle',
-        action='store_true',
-        help='Disable throttle control (keep all records instead of last per device)'
+        "--no-throttle",
+        action="store_true",
+        help="Disable throttle control (keep all records instead of last per device)",
     )
 
-    parser.add_argument(
-        '--buffer-size',
-        type=int,
-        help='Override maximum buffer size'
-    )
+    parser.add_argument("--buffer-size", type=int, help="Override maximum buffer size")
 
     args = parser.parse_args()
 
@@ -1303,23 +1167,24 @@ Configuration file format: See config.example.json
 
         # Apply command-line overrides
         if args.publish_interval is not None:
-            config['publish_interval_sec'] = args.publish_interval
+            config["publish_interval_sec"] = args.publish_interval
         if args.no_throttle:
-            config['throttle_control'] = False
+            config["throttle_control"] = False
         if args.buffer_size:
-            config['max_buffer_size'] = args.buffer_size
+            config["max_buffer_size"] = args.buffer_size
 
         # Create and run gateway
         gateway = BluetoothGateway(config, logger)
 
         # Run async event loop
         import asyncio
+
         asyncio.run(gateway.run())
 
     except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=(args.log_level == 'DEBUG'))
+        logger.error(f"Fatal error: {e}", exc_info=(args.log_level == "DEBUG"))
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

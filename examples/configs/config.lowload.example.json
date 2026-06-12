@@ -1,6 +1,6 @@
 {
-  "_comment": "Low-load BLE profile for dense RF environments (50-100+ advertisers).",
-  "_comment_why": "Reduces the advertising-report flood that can wedge software controllers such as the nRF52840 Zephyr hci_usb dongle. Combines passive scanning (no SCAN_REQ TX), BlueZ duplicate filtering, and AdvertisementMonitor or_patterns so filtering happens below the Python layer.",
+  "_comment": "Dense RF environment profile — active scanning with duplicate filtering.",
+  "_comment_why": "Reduces the advertising-report volume in environments with 50-100+ advertisers. Combines BlueZ duplicate filtering with whitelists and a modest publish interval to keep CPU and MQTT load low. Active scanning (the only supported mode) uses BlueZ SetDiscoveryFilter on the fully reassembled advertisement, which correctly receives extended advertising (AUX PDUs).",
 
   "mqtt": {
     "broker": "your-broker.example.com",
@@ -15,15 +15,12 @@
 
   "bluetooth_adapter": "hci1",
 
-  "scanning_mode": "passive",
-  "_comment_scanning_mode": "'passive' stops the gateway emitting SCAN_REQ packets (less controller TX) and pushes filtering to BlueZ. Requires or_patterns (auto-built from the whitelists below). Omit this key, or set 'active', for the original behavior.",
-
   "duplicate_filtering": true,
-  "_comment_duplicate_filtering": "Suppress duplicate advertisement report data at BlueZ (fewer host-ward reports). Applies to active scanning; passive scanning dedups inherently. Default true.",
+  "_comment_duplicate_filtering": "Suppress duplicate advertisement report data at BlueZ (fewer host-ward reports). Default true.",
 
   "service_uuid_whitelist": ["0000eff0-eff0-1212-1515-eeffd1024132"],
   "manufacturer_id_whitelist": ["0xF0F0"],
-  "_comment_filters": "These two whitelists are used BOTH for app-level filtering AND to auto-build the BlueZ or_patterns (service UUID -> AD type 0x07, manufacturer ID -> AD type 0xFF). A report matching EITHER pattern is delivered, so the target's connectable 1M set (carries the service UUID) and its non-connectable Coded-PHY set (carries only manufacturer 0xF0F0) are both received.",
+  "_comment_filters": "App-level whitelists: a device is accepted if it matches any entry. Also drives hardware-level SetDiscoveryFilter UUID filtering when service_uuid_whitelist is set.",
 
   "publish_interval_sec": 2.0,
   "throttle_control": true,

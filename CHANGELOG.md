@@ -8,20 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Low-load scanning profile for dense RF environments to improve BLE controller
-  stability (e.g. nRF52840 Zephyr `hci_usb` dongles that wedge under an
-  advertising-report flood):
-  - `scanning_mode` config option (`"active"` | `"passive"`). Passive scanning
-    stops the gateway emitting SCAN_REQ packets and pushes filtering to BlueZ.
-  - `duplicate_filtering` config option (default `true`) to suppress duplicate
-    advertisement report data at BlueZ.
-  - Automatic BlueZ `AdvertisementMonitor` `or_patterns`, built from
-    `service_uuid_whitelist` / `manufacturer_id_whitelist`, plus an optional
-    explicit `or_patterns` config key for advanced use.
-  - Example config `examples/configs/config.lowload.example.json` and a
-    `low_load_dense_rf_mode` entry in `config.modes.example.json`.
-- Backward-compatible: when the new keys are absent the gateway behaves exactly
-  as before (active scanning).
+- `duplicate_filtering` config option (default `true`) to suppress duplicate
+  advertisement report data at BlueZ, reducing host-ward report volume in active
+  scanning.
+
+### Removed
+- **Passive scanning mode** (`scanning_mode: "passive"`) and all `or_patterns`
+  / `AdvertisementMonitor` handling.
+
+  **Rationale**: The target devices (Molleau water meters) advertise exclusively
+  via BLE extended advertising — the payload is in the AUX (secondary) PDU. Passive
+  scanning relies on BlueZ's `AdvertisementMonitor` `or_patterns`, which do **not**
+  match extended advertisements. Verified on real hardware (BlueZ 5.82, kernel 6.18,
+  nRF52840): passive → 0 messages, active → 443. Active mode uses BlueZ
+  `SetDiscoveryFilter` on the fully reassembled advertisement and works correctly.
+
+  **Back-compat**: configs that still contain `scanning_mode: "passive"` or an
+  `or_patterns` key are not rejected — a warning is logged and the gateway runs
+  in active mode.
 
 ### Fixed
 - Bluetooth adapter selection is now passed to the BlueZ backend as the

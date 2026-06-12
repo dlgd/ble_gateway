@@ -149,7 +149,7 @@ This document describes the gateway features as specified in commercial BLE gate
 | JSON Format | ✓ | ✓ | Compact JSON strings |
 | Buffer Size Control | ✓ | ✓ | `max_buffer_size` parameter |
 | MQTT Protocol | HTTP | MQTT | Any MQTT Broker |
-| Passive Scanning | ✓ | ✓ | Low power BLE scanning |
+| Duplicate Filtering | ✗ | ✓ | BlueZ-level dedup (`duplicate_filtering`) |
 | Daemon Mode | ✓ | ✓ | systemd service |
 
 ## Configuration Examples

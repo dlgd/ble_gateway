@@ -29,7 +29,7 @@ Implements all features from commercial BLE gateways like the [iGS03M](https://f
 - **Payload Whitelist**: Filter by MAC, name, manufacturer ID, or service UUID
 - **Timestamp Appending**: Millisecond-precision timestamps on all messages
 - **JSON Message Format**: Structured JSON with hex-encoded binary data
-- **BLE Scanning**: Continuous scanning (active by default; optional passive low-load mode for dense RF environments)
+- **BLE Scanning**: Continuous active scanning using BlueZ `SetDiscoveryFilter` (works with extended advertising / AUX PDUs)
 - **Universal MQTT Integration**: Works with any MQTT broker (AWS IoT, Azure, HiveMQ, Mosquitto, etc.)
 - **Daemon Mode**: Run as systemd service with auto-start on boot
 - **Verbose/Debug Modes**: Comprehensive logging for troubleshooting
@@ -233,9 +233,8 @@ cp config.example.json config.json
 | `name_whitelist` | array | List of device names to allow (empty = allow all) |
 | `manufacturer_id_whitelist` | array | List of manufacturer IDs to allow in hex format like `"0x004C"` for Apple (also accepts decimal). Empty = allow all |
 | `service_uuid_whitelist` | array | **List of service UUIDs to allow (empty = allow all)**<br>⚡ **Hardware-accelerated filtering** when used - more efficient than software filtering |
-| `scanning_mode` | string | BLE scan mode: `"active"` (default) or `"passive"`. `"passive"` stops the gateway emitting SCAN_REQ packets and offloads filtering to BlueZ — see [Low-Load Profile](#low-load-profile-for-dense-rf-environments). **Requires** `or_patterns` (auto-built from the whitelists). Absent = `"active"` (original behavior). Linux/BlueZ only. |
-| `duplicate_filtering` | boolean | Suppress duplicate advertisement report data at BlueZ (default: `true`). Fewer host-ward reports. Applies to active scanning; passive scanning dedups inherently. |
-| `or_patterns` | array | *(Advanced, optional)* Explicit BlueZ AdvertisementMonitor patterns, e.g. `[{"start_position": 0, "ad_data_type": 255, "value": "f0f0"}]` (`value` is little-endian hex). Normally you don't need this — patterns are auto-built from `service_uuid_whitelist` and `manufacturer_id_whitelist`. |
+| `scanning_mode` | string | BLE scan mode. Only `"active"` is supported (default). Active scanning uses BlueZ `SetDiscoveryFilter` on the fully reassembled advertisement, which correctly receives extended advertising (AUX PDUs). A config with `"passive"` logs a warning and runs in active mode. |
+| `duplicate_filtering` | boolean | Suppress duplicate advertisement report data at BlueZ (default: `true`). Reduces host-ward report volume in active scanning. |
 
 ### Publish Interval & Throttle Control
 
@@ -304,62 +303,27 @@ See `config.modes.example.json` for more configuration examples.
 
 Whitelist logic: A device is accepted if it matches ANY of the configured whitelists.
 
-### Low-Load Profile (for dense RF environments)
+### Dense RF Environments
 
-In a dense RF environment (a hotel/residence with 50–100+ nearby BLE advertisers),
-some software controllers — notably the nRF52840 Zephyr `hci_usb` dongle — can be
-overwhelmed by the advertising-report flood and stop responding to HCI commands
-until rebooted. The low-load profile reduces how much advertising traffic the scan
-forces the controller to process and deliver host-ward.
-
-It combines three knobs, all opt-in and fully backward-compatible (absent keys =
-original active-scan behavior):
-
-| Key | Low-load value | Effect |
-|-----|----------------|--------|
-| `scanning_mode` | `"passive"` | Gateway stops sending SCAN_REQ packets (less controller TX). The target's payload is in the extended ADV/AUX data, **not** a scan response, so passive still receives it. |
-| `duplicate_filtering` | `true` | BlueZ suppresses duplicate report data (fewer host-ward reports). |
-| `or_patterns` (auto-built) | from whitelists | Filtering is pushed into BlueZ's `AdvertisementMonitor` (and, where the controller supports it, toward hardware), drastically cutting the report flood **before** it reaches Python. |
-
-**Enable it** by setting `scanning_mode: "passive"` and listing the target
-signature in the whitelists (these double as the source for the auto-built
-`or_patterns`):
+In a dense RF environment (50–100+ nearby BLE advertisers), enable
+`duplicate_filtering` (default `true`) so BlueZ suppresses duplicate advertisement
+reports before they reach Python:
 
 ```json
 {
-  "scanning_mode": "passive",
   "duplicate_filtering": true,
   "service_uuid_whitelist": ["0000eff0-eff0-1212-1515-eeffd1024132"],
-  "manufacturer_id_whitelist": ["0xF0F0"]
+  "publish_interval_sec": 2.0,
+  "throttle_control": true
 }
 ```
 
-From these, the gateway builds two OR-patterns:
-- Service UUID → AD type `0x07` (complete 128-bit UUID list), UUID encoded
-  little-endian: `324102d1ffee15151212f0eff0ef0000`.
-- Manufacturer `0xF0F0` → AD type `0xFF` (manufacturer data), company ID
-  little-endian: `f0f0`.
-
-A report is delivered if it matches **either** pattern. This guarantees the target
-is still received: its connectable 1M set carries the service UUID, and its
-non-connectable Coded-PHY set carries manufacturer `0xF0F0` — each set matches at
-least one pattern. In passive mode the gateway deliberately does **not** pass
-`service_uuids` to the scanner, because bleak's host-level UUID filter would
-otherwise drop the manufacturer-only Coded-PHY advertisements; the or_patterns do
-the filtering instead.
-
-> **Notes / limitations**
-> - Passive scanning + `or_patterns` is **Linux/BlueZ only** (requires `bleak >= 1.0`).
-> - BlueZ does not expose per-PHY scan selection over D-Bus, so you cannot
->   "scan Coded-PHY only" from this layer — the profile focuses on passive +
->   duplicate filtering + or_patterns.
-> - `scanning_mode: "passive"` **requires** at least one of `service_uuid_whitelist`,
->   `manufacturer_id_whitelist`, or an explicit `or_patterns`; otherwise the
->   gateway fails fast at config load.
-
-See [`examples/configs/config.lowload.example.json`](examples/configs/config.lowload.example.json)
-for a complete annotated example, or the `low_load_dense_rf_mode` entry in
-[`examples/configs/config.modes.example.json`](examples/configs/config.modes.example.json).
+> **Why active-only?** The target devices (e.g. Molleau water meters) advertise
+> exclusively via BLE extended advertising — the payload is in the AUX (secondary)
+> PDU. Passive scanning relies on BlueZ's `AdvertisementMonitor` `or_patterns`,
+> which do **not** match extended advertisements, so passive mode receives nothing.
+> Active mode uses BlueZ `SetDiscoveryFilter` on the fully reassembled advertisement
+> and works correctly.
 
 ## Usage
 
@@ -625,7 +589,7 @@ The systemd service includes several optimizations for CPU efficiency:
 
 1. **CPU Quota**: Limited to 50% of one CPU core (adjust in service file)
 2. **Memory Limit**: Maximum 512MB RAM usage
-3. **Scan Mode**: Active scanning by default; an optional passive low-load mode reduces controller load in dense RF environments
+3. **Scan Mode**: Active scanning with `duplicate_filtering` to reduce host-ward report volume
 4. **Throttle Control**: Prevents excessive message processing
 5. **Stats Logging**: Reduced frequency to minimize overhead
 
@@ -775,7 +739,7 @@ pip install --force-reinstall bleak awsiotsdk
 The gateway is optimized for low CPU usage on Raspberry Pi. Typical CPU usage: **2-5%** on Raspberry Pi 4.
 
 **Built-in optimizations:**
-1. **Optional passive scanning** - Lower controller load than active scanning in dense RF environments (see [Low-Load Profile](#low-load-profile-for-dense-rf-environments))
+1. **Duplicate filtering** - BlueZ-level deduplication reduces host-ward report volume (`duplicate_filtering: true`)
 2. **Hardware-level filtering** - Service UUID filtering handled by Bluetooth chip (when configured)
 3. **Fast-path filtering** - Software filtering only for non-hardware-filterable criteria
 4. **Reduced logging** - Stats logged every 10+ seconds instead of every scan
