@@ -97,6 +97,7 @@ FLUSH_CHECK_INTERVAL_BUFFERED = 1.0
 # BLE packet structure constants
 BLE_UUID_TYPE_INCOMPLETE_128 = 0x06
 BLE_UUID_TYPE_COMPLETE_128 = 0x07  # AD type: complete list of 128-bit service UUIDs
+BLE_TYPE_NAME_COMPLETE = 0x09  # AD type: complete local name (device serial for V3)
 BLE_TYPE_MANUFACTURER_DATA = 0xFF
 BLE_TYPE_SERVICE_DATA_16BIT = 0x16
 
@@ -124,6 +125,16 @@ class BLEMessage:
         Returns raw BLE advertising packet as bytes.
         """
         packet = bytearray()
+
+        # Add complete local name (device serial). Required by the V3 decryption
+        # path on the cloud side: the full serial is the input to both the
+        # per-device key derivation and the AES-128-CCM nonce, so it must survive
+        # reconstruction here or the payload can never be decrypted.
+        if self.device_name:
+            name_bytes = self.device_name.encode("utf-8")[:248]
+            packet.append(1 + len(name_bytes))  # length = type + name bytes
+            packet.append(BLE_TYPE_NAME_COMPLETE)
+            packet.extend(name_bytes)
 
         # Add service UUIDs (incomplete list of 128-bit UUIDs)
         if self.service_uuids:
@@ -766,7 +777,11 @@ class BluetoothGateway:
         return BLEMessage(
             timestamp_ms=utc_timestamp_ms,
             device_address=device.address,
-            device_name=device.name,
+            # Prefer the name parsed from this advertisement; fall back to the
+            # BlueZ-cached device name. The name (serial) is mandatory for V3
+            # decryption, so don't rely solely on the cached value, which can be
+            # None on first sighting.
+            device_name=advertisement.local_name or device.name,
             rssi=advertisement.rssi,
             manufacturer_data=dict(advertisement.manufacturer_data),
             service_data=dict(advertisement.service_data),
