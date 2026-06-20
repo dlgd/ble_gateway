@@ -24,8 +24,10 @@ the same reason.
 
 import abc
 import asyncio
+import ctypes
 import fcntl
 import logging
+import os
 import socket
 import struct
 import time
@@ -47,6 +49,39 @@ HCI_CHANNEL_USER = 1
 # which can hang on SoftDevice-Controller firmware during a mgmt power-off.
 HCIDEVUP = 0x400448C9
 HCIDEVDOWN = 0x400448CA
+
+
+class _SockaddrHci(ctypes.Structure):
+    _fields_ = [
+        ("hci_family", ctypes.c_ushort),
+        ("hci_dev", ctypes.c_ushort),
+        ("hci_channel", ctypes.c_ushort),
+    ]
+
+
+try:
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+except OSError:  # pragma: no cover - non-glibc / non-Linux
+    _libc = None
+
+
+def _bind_hci_user_channel(sock, dev_id: int) -> None:
+    """Bind an HCI socket to HCI_CHANNEL_USER on ``dev_id``.
+
+    Python's native ``socket.bind`` HCI address format varies across CPython
+    builds — some accept ``(dev, channel)``, others reject it with
+    ``bind(): wrong format``. Bind the ``sockaddr_hci`` struct directly via libc
+    (matching the validated reference) so it works regardless of the interpreter.
+    """
+    if _libc is not None:
+        addr = _SockaddrHci(AF_BLUETOOTH, dev_id, HCI_CHANNEL_USER)
+        ctypes.set_errno(0)
+        if _libc.bind(sock.fileno(), ctypes.byref(addr), ctypes.sizeof(addr)) == 0:
+            return
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    # Fallback: native bind (newer CPython accepts the 2-tuple form).
+    sock.bind((dev_id, HCI_CHANNEL_USER))
 
 # HCI command groups / opcodes (OGF, OCF)
 OGF_HOST_CTL = 0x03
@@ -496,7 +531,7 @@ class HciCodedScanBackend(ScanBackend):
                 AF_BLUETOOTH, socket.SOCK_RAW | socket.SOCK_CLOEXEC, BTPROTO_HCI
             )
             try:
-                sock.bind((self.dev_id, HCI_CHANNEL_USER))
+                _bind_hci_user_channel(sock, self.dev_id)
                 last_err = None
                 break
             except OSError as e:
