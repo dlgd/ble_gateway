@@ -18,28 +18,11 @@ import ssl
 import sys
 import time
 import uuid
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
-try:
-    from bleak import BleakScanner
-    from bleak.backends.device import BLEDevice
-    from bleak.backends.scanner import AdvertisementData
-except ImportError:
-    print("Error: bleak library not installed. Run: pip install bleak")
-    sys.exit(1)
-
-# BlueZ scanner args (bleak >= 1.0, Linux only). Optional: active scan keeps
-# working on older bleak versions or non-BlueZ backends.
-try:
-    from bleak.args.bluez import BlueZScannerArgs
-
-    BLUEZ_SCANNER_ARGS_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on installed bleak/platform
-    BlueZScannerArgs = None
-    BLUEZ_SCANNER_ARGS_AVAILABLE = False
+from ble_message import BLEMessage
+from scan_backends import create_scan_backend
 
 try:
     import paho.mqtt.client as mqtt
@@ -94,125 +77,18 @@ STATS_LOG_INTERVAL_SEC = 10.0
 FLUSH_CHECK_INTERVAL_IMMEDIATE = 0.1
 FLUSH_CHECK_INTERVAL_BUFFERED = 1.0
 
-# BLE packet structure constants
-BLE_UUID_TYPE_INCOMPLETE_128 = 0x06
-BLE_UUID_TYPE_COMPLETE_128 = 0x07  # AD type: complete list of 128-bit service UUIDs
-BLE_TYPE_NAME_COMPLETE = 0x09  # AD type: complete local name (device serial for V3)
-BLE_TYPE_MANUFACTURER_DATA = 0xFF
-BLE_TYPE_SERVICE_DATA_16BIT = 0x16
+# BLE scan backend defaults
+DEFAULT_SCAN_BACKEND = "auto"
+DEFAULT_HCI_SCAN_TYPE = "passive"
+DEFAULT_HCI_INTERVAL = 0x0060
+DEFAULT_HCI_WINDOW = 0x0060
+DEFAULT_HCI_RANDOM_ADDR = "DE:DE:DE:DE:DE:C0"
+DEFAULT_HCI_PROBE_SECONDS = 0.0
+VALID_SCAN_BACKENDS = ("bluez", "hci_coded", "auto")
 
 # Validation limits
 MAX_CLIENT_ID_LENGTH = 128
 MAX_HOSTNAME_LENGTH = 20
-
-
-@dataclass
-class BLEMessage:
-    """Structured BLE advertisement message."""
-
-    timestamp_ms: int
-    device_address: str
-    device_name: Optional[str]
-    rssi: int
-    manufacturer_data: Dict[int, bytes]
-    service_data: Dict[str, bytes]
-    service_uuids: List[str]
-    tx_power: Optional[int]
-
-    def _reconstruct_advertising_data(self) -> bytes:
-        """Reconstruct BLE advertising data from parsed components.
-
-        Returns raw BLE advertising packet as bytes.
-        """
-        packet = bytearray()
-
-        # Add complete local name (device serial). Required by the V3 decryption
-        # path on the cloud side: the full serial is the input to both the
-        # per-device key derivation and the AES-128-CCM nonce, so it must survive
-        # reconstruction here or the payload can never be decrypted.
-        if self.device_name:
-            name_bytes = self.device_name.encode("utf-8")[:248]
-            packet.append(1 + len(name_bytes))  # length = type + name bytes
-            packet.append(BLE_TYPE_NAME_COMPLETE)
-            packet.extend(name_bytes)
-
-        # Add service UUIDs (incomplete list of 128-bit UUIDs)
-        if self.service_uuids:
-            for uuid_str in self.service_uuids:
-                # Remove hyphens and convert to bytes (little-endian for BLE)
-                uuid_hex = uuid_str.replace("-", "")
-                uuid_bytes = bytes.fromhex(uuid_hex)
-                # Reverse for little-endian
-                uuid_bytes_le = uuid_bytes[::-1]
-
-                # Length = 1 (type) + 16 (UUID bytes)
-                packet.append(17)
-                packet.append(BLE_UUID_TYPE_INCOMPLETE_128)
-                packet.extend(uuid_bytes_le)
-
-        # Add manufacturer specific data
-        for company_id, data in self.manufacturer_data.items():
-            # Length = 1 (type) + 2 (company ID) + data length
-            length = 1 + 2 + len(data)
-            packet.append(length)
-            packet.append(BLE_TYPE_MANUFACTURER_DATA)
-            # Company ID in little-endian
-            packet.append(company_id & 0xFF)
-            packet.append((company_id >> 8) & 0xFF)
-            packet.extend(data)
-
-        # Add service data (16-bit UUID service data)
-        for uuid_str, data in self.service_data.items():
-            uuid_hex = uuid_str.replace("-", "")
-            uuid_bytes = bytes.fromhex(uuid_hex)
-
-            # Length = 1 (type) + UUID bytes + data length
-            length = 1 + len(uuid_bytes) + len(data)
-            packet.append(length)
-            packet.append(BLE_TYPE_SERVICE_DATA_16BIT)
-            packet.extend(uuid_bytes[::-1])  # Little-endian
-            packet.extend(data)
-
-        return bytes(packet)
-
-    def to_gprp_format(self, gateway_mac: str, topic: str) -> str:
-        """Convert to GPRP CSV format wrapped in JSON.
-
-        Format: $GPRP,<gateway_mac>,<device_mac>,<rssi>,<ble_advertising_hex>,<timestamp>
-
-        Args:
-            gateway_mac: Gateway MAC address (12 hex chars, no separators)
-            topic: MQTT topic name
-
-        Returns:
-            JSON string with data array and mqtt_topic
-        """
-        # Reconstruct raw advertising data
-        advertising_hex = self._reconstruct_advertising_data().hex().upper()
-
-        # Convert timestamp from ms to seconds with decimal
-        timestamp_sec = self.timestamp_ms / 1000.0
-
-        # Remove colons from device MAC address
-        device_mac = self.device_address.replace(":", "").upper()
-
-        # Build GPRP CSV line
-        gprp_line = f"$GPRP,{gateway_mac},{device_mac},{self.rssi},{advertising_hex},{timestamp_sec:.3f}"
-
-        # Wrap in JSON structure
-        return json.dumps(
-            {"data": [gprp_line], "mqtt_topic": topic}, separators=(",", ":")
-        )
-
-    def to_json(self) -> str:
-        """Convert to JSON string with hex-encoded bytes."""
-        data = asdict(self)
-        # Convert bytes to hex strings
-        data["manufacturer_data"] = {
-            str(k): v.hex() for k, v in self.manufacturer_data.items()
-        }
-        data["service_data"] = {k: v.hex() for k, v in self.service_data.items()}
-        return json.dumps(data, separators=(",", ":"))
 
 
 class MessageBuffer:
@@ -329,10 +205,15 @@ class PayloadFilter:
         self.manufacturer_id_whitelist = manufacturer_id_whitelist
         self.service_uuid_whitelist = service_uuid_whitelist
 
-    def should_accept(
-        self, device: BLEDevice, advertisement: AdvertisementData
-    ) -> bool:
-        """Check if device matches any whitelist criteria."""
+    def should_accept(self, msg: BLEMessage) -> bool:
+        """Check if a normalized advert matches any whitelist criteria.
+
+        Operates on a backend-agnostic ``BLEMessage`` so both the BlueZ and the
+        raw-HCI scan backends are filtered identically. Note the name check uses
+        ``msg.device_name`` (the name parsed from this advertisement, falling
+        back to the cached name) — the same name used for GPRP reconstruction
+        and V3 decryption.
+        """
         # If no whitelists configured, accept all
         if not any(
             [
@@ -345,26 +226,29 @@ class PayloadFilter:
             return True
 
         # Check MAC address
-        if self.mac_whitelist and device.address.upper() in self.mac_whitelist:
+        if self.mac_whitelist and msg.device_address.upper() in self.mac_whitelist:
             return True
 
         # Check device name
-        if self.name_whitelist and device.name and device.name in self.name_whitelist:
+        if (
+            self.name_whitelist
+            and msg.device_name
+            and msg.device_name in self.name_whitelist
+        ):
             return True
 
         # Check manufacturer IDs
-        if self.manufacturer_id_whitelist and advertisement.manufacturer_data:
+        if self.manufacturer_id_whitelist and msg.manufacturer_data:
             if any(
                 mid in self.manufacturer_id_whitelist
-                for mid in advertisement.manufacturer_data.keys()
+                for mid in msg.manufacturer_data.keys()
             ):
                 return True
 
         # Check service UUIDs
-        if self.service_uuid_whitelist and advertisement.service_uuids:
+        if self.service_uuid_whitelist and msg.service_uuids:
             if any(
-                uuid in self.service_uuid_whitelist
-                for uuid in advertisement.service_uuids
+                uuid in self.service_uuid_whitelist for uuid in msg.service_uuids
             ):
                 return True
 
@@ -764,81 +648,50 @@ class BluetoothGateway:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-    def _create_ble_message(
-        self, device: BLEDevice, advertisement: AdvertisementData
-    ) -> BLEMessage:
-        """Create BLEMessage from device and advertisement data.
+    def _handle_advert(self, msg: BLEMessage) -> None:
+        """Shared sink for normalized adverts from any scan backend.
 
-        Uses UTC timestamp to ensure consistency across time zones.
-        """
-        # Get current UTC time in milliseconds
-        utc_timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-
-        return BLEMessage(
-            timestamp_ms=utc_timestamp_ms,
-            device_address=device.address,
-            # Prefer the name parsed from this advertisement; fall back to the
-            # BlueZ-cached device name. The name (serial) is mandatory for V3
-            # decryption, so don't rely solely on the cached value, which can be
-            # None on first sighting.
-            device_name=advertisement.local_name or device.name,
-            rssi=advertisement.rssi,
-            manufacturer_data=dict(advertisement.manufacturer_data),
-            service_data=dict(advertisement.service_data),
-            service_uuids=list(advertisement.service_uuids),
-            tx_power=advertisement.tx_power,
-        )
-
-    def _detection_callback(self, device: BLEDevice, advertisement: AdvertisementData):
-        """
-        Handle BLE device detection.
-
-        Note: If service_uuids filter is configured in scanner, this callback
-        only receives advertisements matching those UUIDs (hardware-level filtering).
-        Additional filtering is applied here for MAC, name, and manufacturer ID.
+        Applies whitelist filtering, then buffers the message. This method must
+        only ever run on the asyncio event-loop thread: the BlueZ backend calls
+        it directly from bleak's callback (already on the loop), and the raw-HCI
+        backend marshals into it via ``loop.call_soon_threadsafe`` so the
+        ``MessageBuffer`` and stats stay single-threaded.
         """
         # Apply payload filter first
-        if not self.payload_filter.should_accept(device, advertisement):
+        if not self.payload_filter.should_accept(msg):
             self.stats["messages_filtered"] += 1
             self.logger.debug(
-                f"Filtered device: {device.address} ({device.name}) - not in whitelist"
+                f"Filtered device: {msg.device_address} ({msg.device_name}) - not in whitelist"
             )
             return
 
         self.stats["devices_seen"] += 1
 
-        # Create BLE message and add to buffer
         try:
-            ble_message = self._create_ble_message(device, advertisement)
-            self.message_buffer.add_message(ble_message)
+            self.message_buffer.add_message(msg)
             self.stats["messages_buffered"] += 1
 
-            # Debug log with full message details
-            # Format manufacturer data as hex strings for readability
-            mfg_data_str = (
-                {k: v.hex() for k, v in advertisement.manufacturer_data.items()}
-                if advertisement.manufacturer_data
-                else {}
-            )
-            svc_data_str = (
-                {k: v.hex() for k, v in advertisement.service_data.items()}
-                if advertisement.service_data
-                else {}
-            )
-
-            self.logger.debug(
-                f"{ICON_RECEIVE} BLE message received - Device: {device.address} ({device.name}), "
-                f"RSSI: {advertisement.rssi} dBm, "
-                f"Manufacturer Data: {mfg_data_str}, "
-                f"Service UUIDs: {advertisement.service_uuids}, "
-                f"Service Data: {svc_data_str}, "
-                f"TX Power: {advertisement.tx_power}, "
-                f"Buffer size: {self.message_buffer.size()}"
-            )
+            # Debug log with full message details. Guard on the effective level
+            # so the hex formatting is skipped entirely in the common (non-DEBUG)
+            # case — this is the per-advert hot path on a 1GB Pi.
+            if self.logger.isEnabledFor(logging.DEBUG):
+                mfg_data_str = {
+                    k: v.hex() for k, v in msg.manufacturer_data.items()
+                }
+                svc_data_str = {k: v.hex() for k, v in msg.service_data.items()}
+                self.logger.debug(
+                    f"{ICON_RECEIVE} BLE message received - Device: {msg.device_address} ({msg.device_name}), "
+                    f"RSSI: {msg.rssi} dBm, "
+                    f"Manufacturer Data: {mfg_data_str}, "
+                    f"Service UUIDs: {msg.service_uuids}, "
+                    f"Service Data: {svc_data_str}, "
+                    f"TX Power: {msg.tx_power}, "
+                    f"Buffer size: {self.message_buffer.size()}"
+                )
 
         except Exception as e:
             self.logger.error(
-                f"{ICON_ERROR} Error processing device {device.address}: {e}"
+                f"{ICON_ERROR} Error processing device {msg.device_address}: {e}"
             )
 
     def _flush_buffer(self) -> None:
@@ -905,55 +758,21 @@ class BluetoothGateway:
             return
 
         self.running = True
-        scanner = None
+        self._loop = asyncio.get_running_loop()
+        backend = None
 
         try:
-            scanning_mode = self.config.get("scanning_mode", DEFAULT_SCANNING_MODE)
-            duplicate_filtering = self.config.get(
-                "duplicate_filtering", DEFAULT_DUPLICATE_FILTERING
+            # Build the configured scan source. Backends normalize every advert
+            # into a BLEMessage and feed it to self._handle_advert, so the
+            # filter/buffer/publish pipeline below is identical regardless of
+            # which backend (bluez / hci_coded / auto) is in use.
+            backend = create_scan_backend(
+                self.config, self._handle_advert, self.logger, loop=self._loop
             )
-
-            scanner_kwargs = {}
-            bluez_args = {}
-
-            # Adapter selection: use the BlueZ kwarg path on Linux (avoids deprecation
-            # warning from passing 'adapter' directly to BleakScanner).
-            adapter = self.config.get("bluetooth_adapter")
-            if adapter:
-                self.logger.info(f"Using Bluetooth adapter: {adapter}")
-                if BLUEZ_SCANNER_ARGS_AVAILABLE:
-                    bluez_args["adapter"] = adapter
-                else:
-                    scanner_kwargs["adapter"] = adapter  # non-BlueZ backends
-
-            # Active scanning: hardware-level service UUID filtering via SetDiscoveryFilter.
-            service_uuids = None
-            if self.payload_filter.service_uuid_whitelist:
-                service_uuids = list(self.payload_filter.service_uuid_whitelist)
-                self.logger.info(
-                    f"{ICON_INFO} Hardware-level filtering enabled for {len(service_uuids)} service UUID(s): "
-                    f"{service_uuids}"
-                )
-            # DuplicateData=False tells BlueZ to suppress duplicate report data
-            # (fewer host-ward reports). DuplicateData=True surfaces every
-            # advertisement. duplicate_filtering=True -> DuplicateData=False.
-            if BLUEZ_SCANNER_ARGS_AVAILABLE:
-                bluez_args["filters"] = {"DuplicateData": not duplicate_filtering}
-            self.logger.info(f"{ICON_INFO} Duplicate filtering: {duplicate_filtering}")
-
-            if bluez_args and BLUEZ_SCANNER_ARGS_AVAILABLE:
-                scanner_kwargs["bluez"] = BlueZScannerArgs(**bluez_args)
-
-            scanner = BleakScanner(
-                detection_callback=self._detection_callback,
-                service_uuids=service_uuids,
-                scanning_mode=scanning_mode,
-                **scanner_kwargs,
-            )
+            self.scan_backend = backend
 
             self.logger.info("Starting continuous BLE scanning...")
-            self.logger.info(f"Scanning mode: {scanning_mode}")
-            await scanner.start()
+            await backend.start()
 
             # Use a reasonable sleep interval for stats logging
             last_stats_time = time.time()
@@ -1005,8 +824,8 @@ class BluetoothGateway:
                 except Exception as e:
                     self.logger.error(f"{ICON_ERROR} Error flushing message: {e}")
 
-            if scanner:
-                await scanner.stop()
+            if backend:
+                await backend.stop()
             self.publisher.disconnect()
             self.logger.info("Gateway stopped")
             self.logger.info(f"Final stats: {self.stats}")
@@ -1057,6 +876,71 @@ def load_config(config_path: str) -> dict:
         if not isinstance(config["duplicate_filtering"], bool):
             raise ValueError(
                 f"duplicate_filtering must be a boolean, got: {config['duplicate_filtering']}"
+            )
+
+    # Validate scan backend selection.
+    if "scan_backend" in config:
+        backend = config["scan_backend"]
+        if backend not in VALID_SCAN_BACKENDS:
+            raise ValueError(
+                f"scan_backend must be one of {VALID_SCAN_BACKENDS}, got: {backend}"
+            )
+
+    # Validate raw-HCI Coded-PHY backend settings (all optional).
+    if "hci_coded" in config:
+        hci = config["hci_coded"]
+        if not isinstance(hci, dict):
+            raise ValueError(f"hci_coded must be an object, got: {type(hci).__name__}")
+        if "dev_id" in hci and (not isinstance(hci["dev_id"], int) or hci["dev_id"] < 0):
+            raise ValueError(
+                f"hci_coded.dev_id must be a non-negative integer, got: {hci['dev_id']}"
+            )
+        if "scan_type" in hci and hci["scan_type"] not in ("active", "passive"):
+            raise ValueError(
+                f"hci_coded.scan_type must be 'active' or 'passive', got: {hci['scan_type']}"
+            )
+        for key in ("interval", "window"):
+            if key in hci and (not isinstance(hci[key], int) or not 0 < hci[key] <= 0xFFFF):
+                raise ValueError(
+                    f"hci_coded.{key} must be an integer in 1..65535, got: {hci.get(key)}"
+                )
+        if "interval" in hci and "window" in hci and hci["window"] > hci["interval"]:
+            raise ValueError(
+                f"hci_coded.window ({hci['window']}) must be <= interval ({hci['interval']})"
+            )
+        if "random_address" in hci:
+            addr = hci["random_address"]
+            parts = addr.split(":") if isinstance(addr, str) else []
+            if len(parts) != 6 or any(len(p) != 2 for p in parts):
+                raise ValueError(
+                    f"hci_coded.random_address must be 'XX:XX:XX:XX:XX:XX', got: {addr}"
+                )
+            try:
+                msb = int(parts[0], 16)
+            except ValueError as e:
+                raise ValueError(
+                    f"hci_coded.random_address has invalid hex: {addr}"
+                ) from e
+            # Static random address: the two most-significant bits must be 0b11,
+            # else the controller rejects LE Set Random Address / scan enable.
+            if (msb & 0xC0) != 0xC0:
+                raise ValueError(
+                    "hci_coded.random_address must be a static random address "
+                    f"(top two bits of the first octet set to 1), got: {addr}"
+                )
+        if "power_on_at_shutdown" in hci and not isinstance(
+            hci["power_on_at_shutdown"], bool
+        ):
+            raise ValueError(
+                "hci_coded.power_on_at_shutdown must be a boolean, got: "
+                f"{hci['power_on_at_shutdown']}"
+            )
+        probe = hci.get("probe_seconds")
+        if "probe_seconds" in hci and (
+            not isinstance(probe, (int, float)) or probe < 0
+        ):
+            raise ValueError(
+                f"hci_coded.probe_seconds must be a non-negative number, got: {probe}"
             )
 
     # or_patterns was used by the removed passive scanning mode. Warn and ignore.

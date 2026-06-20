@@ -8,9 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Pluggable scan backends** via the `scan_backend` config key (`bluez` /
+  `hci_coded` / `auto`, default `auto`):
+  - `hci_coded` — a raw HCI-User-Channel scanner that scans **LE Coded PHY only**
+    (`Scanning_PHYs=0x04`), for Nordic SoftDevice-Controller firmware that cannot
+    scan 1M+Coded together (which the Linux kernel always requests). It brings the
+    adapter down via the `HCIDEVDOWN` ioctl (no `btmgmt` dependency), binds
+    `HCI_CHANNEL_USER`, runs the recv loop in a worker thread, and marshals
+    adverts onto the asyncio loop. Validated against an nRF52840 dongle (Nordic
+    SDC), receiving the Coded-PHY meter at ~9 reports/s. Configurable via an
+    `hci_coded` block (`dev_id`, `scan_type`, `interval`, `window`,
+    `random_address`, `power_on_at_shutdown`, `probe_seconds`).
+  - `auto` tries `bluez` and falls back to `hci_coded` on the multi-PHY rejection
+    pattern.
+  - The advert source is the only thing that changes — filtering, buffering, and
+    MQTT publishing are identical across backends.
 - `duplicate_filtering` config option (default `true`) to suppress duplicate
   advertisement report data at BlueZ, reducing host-ward report volume in active
   scanning.
+
+### Changed
+- Refactored the scanner into a `ScanBackend` interface; `BLEMessage` moved to
+  `ble_message.py` and the backends live in `scan_backends.py`. `PayloadFilter`
+  now filters on the normalized `BLEMessage` (the name whitelist matches the
+  advertised name, falling back to the cached name) so all backends are filtered
+  identically.
 
 ### Removed
 - **Passive scanning mode** (`scanning_mode: "passive"`) and all `or_patterns`
