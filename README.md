@@ -234,7 +234,50 @@ cp config.example.json config.json
 | `manufacturer_id_whitelist` | array | List of manufacturer IDs to allow in hex format like `"0x004C"` for Apple (also accepts decimal). Empty = allow all |
 | `service_uuid_whitelist` | array | **List of service UUIDs to allow (empty = allow all)**<br>⚡ **Hardware-accelerated filtering** when used - more efficient than software filtering |
 | `scanning_mode` | string | BLE scan mode. Only `"active"` is supported (default). Active scanning uses BlueZ `SetDiscoveryFilter` on the fully reassembled advertisement, which correctly receives extended advertising (AUX PDUs). A config with `"passive"` logs a warning and runs in active mode. |
-| `duplicate_filtering` | boolean | Suppress duplicate advertisement report data at BlueZ (default: `true`). Reduces host-ward report volume in active scanning. |
+| `duplicate_filtering` | boolean | Suppress duplicate advertisement report data at BlueZ (default: `true`). Reduces host-ward report volume in active scanning. (Ignored by the `hci_coded` backend, which never filters at the controller — the throttle handles dedup.) |
+| `scan_backend` | string | Advert source: `"bluez"`, `"hci_coded"`, or `"auto"` (default `"auto"`). See [Scan Backends](#scan-backends). |
+| `hci_coded.dev_id` | integer | HCI device index for the raw backend (default: derived from `bluetooth_adapter`, e.g. `"hci0"` → `0`). |
+| `hci_coded.scan_type` | string | `"passive"` (default) or `"active"` for the raw Coded-PHY scan. |
+| `hci_coded.interval` / `hci_coded.window` | integer | Scan interval / window in 0.625 ms units (default `0x60` = 60 ms). `window` ≤ `interval`. |
+| `hci_coded.random_address` | string | Static random address used by the raw backend (default `"DE:DE:DE:DE:DE:C0"`; the top two bits of the first octet must be set). |
+| `hci_coded.power_on_at_shutdown` | boolean | Power the adapter back on (returning it to BlueZ) when the gateway stops (default `true`). |
+| `hci_coded.probe_seconds` | number | Optional `auto`-mode probe: if `> 0`, after a successful BlueZ start wait this long and fall back to `hci_coded` if no adverts arrive (default `0` = disabled). |
+
+### Scan Backends
+
+The gateway can source adverts two ways, selected by `scan_backend`:
+
+- **`bluez`** — the standard bleak/BlueZ scanner. Correct for adapters that
+  support multi-PHY extended scanning (open-source controllers, built-in Pi
+  radios). This is the original behavior.
+- **`hci_coded`** — a raw HCI-User-Channel scanner that scans **LE Coded PHY
+  only** (`Scanning_PHYs=0x04`). Required for **Nordic SoftDevice-Controller
+  (SDC)** firmware (e.g. an nRF52840 dongle running Zephyr `hci_usb`): when the
+  controller reports LE Coded support, the Linux kernel always requests scanning
+  on 1M+Coded together, which SDC rejects (HCI `0x11`) — so BlueZ-based scanning
+  never starts. Scanning Coded-only over a raw socket works reliably.
+- **`auto`** (default) — start `bluez`; if it fails with the multi-PHY rejection
+  pattern (`org.bluez.Error.InProgress` / `NotReady`) fall back to `hci_coded`.
+  For SDC firmware, setting `scan_backend: "hci_coded"` explicitly is the most
+  reliable choice.
+
+Only the advert *source* changes — filtering, buffering, and MQTT publishing are
+identical for all backends.
+
+**Permissions for `hci_coded`:** the raw backend opens an `AF_BLUETOOTH` raw
+socket (`CAP_NET_RAW`) and brings the adapter down (via the `HCIDEVDOWN` ioctl,
+`CAP_NET_ADMIN`) before binding `HCI_CHANNEL_USER`. The shipped systemd unit
+already grants both capabilities, so no extra capability is needed — and no
+external tools are required (it does **not** shell out to `btmgmt`, which can
+hang on SoftDevice-Controller firmware). The backend takes **exclusive** control
+of the adapter while running (it detaches bluetoothd); on shutdown it disables
+the scan, closes the socket, and — unless `power_on_at_shutdown` is `false` —
+brings the adapter back up (`HCIDEVUP`) so BlueZ can manage it again. A
+replugged dongle is re-acquired automatically with backoff.
+
+Validated against an nRF52840 dongle (Zephyr `hci_usb` + Nordic SDC): the
+backend receives the Coded-PHY meter reliably (~9 reports/s) where BlueZ-based
+scanning cannot start at all.
 
 ### Publish Interval & Throttle Control
 

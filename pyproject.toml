@@ -63,7 +63,11 @@ Changelog = "https://github.com/dlgd/ble_gateway/blob/main/CHANGELOG.md"
 ble-gateway = "ble_gateway:main"
 
 [tool.setuptools]
-py-modules = ["ble_gateway"]
+py-modules = ["ble_gateway", "ble_message", "scan_backends"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.black]
 line-length = 100

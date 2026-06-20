@@ -1,0 +1,35 @@
+{
+  "_comment": "Raw-HCI Coded-PHY-only backend — for Nordic SoftDevice-Controller firmware (e.g. nRF52840 dongle running Zephyr hci_usb).",
+  "_comment_why": "SDC cannot scan 1M+Coded together (HCI 0x11), which is what the Linux kernel always requests, so BlueZ-based scanning never starts. This backend drives the controller over a raw HCI_CHANNEL_USER socket and scans LE Coded PHY only (Scanning_PHYs=0x04). Requires CAP_NET_RAW+CAP_NET_ADMIN (granted by the shipped systemd unit); no external tools needed (uses the HCIDEVDOWN/HCIDEVUP ioctls, not btmgmt).",
+
+  "mqtt": {
+    "broker": "your-broker.example.com",
+    "port": 8883,
+    "topic": "ble/gateway/data",
+    "auth_type": "userpass",
+    "credentials": {
+      "username": "your-username",
+      "password": "your-password"
+    }
+  },
+
+  "scan_backend": "hci_coded",
+  "_comment_scan_backend": "bluez | hci_coded | auto (default auto). Use hci_coded explicitly for SDC firmware; auto falls back to it on the BlueZ multi-PHY rejection pattern.",
+
+  "bluetooth_adapter": "hci0",
+  "hci_coded": {
+    "scan_type": "passive",
+    "interval": 96,
+    "window": 96,
+    "random_address": "DE:DE:DE:DE:DE:C0",
+    "power_on_at_shutdown": true
+  },
+  "_comment_hci_coded": "dev_id defaults from bluetooth_adapter (hci0 -> 0). interval/window are in 0.625ms units (96 = 60ms), window <= interval. random_address must be a static random address (top two bits of the first octet set).",
+
+  "service_uuid_whitelist": ["0000eff0-eff0-1212-1515-eeffd1024132"],
+  "_comment_filters": "Software whitelists apply to every backend. The hci_coded backend has no hardware UUID filter, so filtering happens in software here.",
+
+  "publish_interval_sec": 2.0,
+  "throttle_control": true,
+  "max_buffer_size": 100
+}
