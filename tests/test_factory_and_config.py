@@ -100,6 +100,14 @@ def test_load_config_rejects_non_static_random_address(tmp_path):
         )
 
 
+def test_load_config_rejects_non_hex_random_address_octet(tmp_path):
+    # A bad non-first octet must be caught at load, not at scan startup.
+    with pytest.raises(ValueError):
+        load_config(
+            _write_cfg(tmp_path, {"hci_coded": {"random_address": "C0:ZZ:11:22:33:44"}})
+        )
+
+
 def test_load_config_rejects_bad_scan_type(tmp_path):
     with pytest.raises(ValueError):
         load_config(_write_cfg(tmp_path, {"hci_coded": {"scan_type": "sniff"}}))

@@ -955,7 +955,11 @@ def load_config(config_path: str) -> dict:
                     f"hci_coded.random_address must be 'XX:XX:XX:XX:XX:XX', got: {addr}"
                 )
             try:
-                msb = int(parts[0], 16)
+                # Validate every octet is hex, not just the first — otherwise a
+                # bad octet like 'ZZ' only blows up later in _random_addr_le()
+                # during scan startup.
+                octets = [int(p, 16) for p in parts]
+                msb = octets[0]
             except ValueError as e:
                 raise ValueError(
                     f"hci_coded.random_address has invalid hex: {addr}"
