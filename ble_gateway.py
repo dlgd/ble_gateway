@@ -355,15 +355,11 @@ class MQTTPublisher:
             )
         else:
             self.connected = False
-            error_messages = {
-                1: "Connection refused - incorrect protocol version",
-                2: "Connection refused - invalid client identifier",
-                3: "Connection refused - server unavailable",
-                4: "Connection refused - bad username or password",
-                5: "Connection refused - not authorized",
-            }
-            error_msg = error_messages.get(rc, f"Unknown error code: {rc}")
-            self.logger.error(f"{ICON_ERROR} Connection failed: {error_msg}")
+            # Under CallbackAPIVersion.VERSION2 rc is a ReasonCode with MQTT5-style
+            # values (e.g. 135 = Not authorized) even for v3.1.1 brokers, so the
+            # old 1..5 CONNACK table mislabelled real failures. ReasonCode.__str__
+            # already yields a human-readable name.
+            self.logger.error(f"{ICON_ERROR} Connection failed: {rc}")
 
     def _on_disconnect(self, client, userdata, flags, rc, properties=None):
         """Callback when connection is lost."""
