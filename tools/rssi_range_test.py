@@ -281,9 +281,12 @@ def analyze(path, baseline=None, plot_path=None):
                                       key=lambda kv: (_loc_key(kv[0][0]), kv[0][1])):
         rate, rssi, pdr = agg(rs, "rate_hz"), agg(rs, "median_rssi"), agg(rs, "pdr")
         summary[(loc, mounting)] = (rate, rssi, pdr)
+        # A group migrated from an older CSV can have every rate_hz/median_rssi
+        # cell empty, so agg() returns None; render those as '-' instead of
+        # crashing on an unconditional numeric format.
         print(f"{loc:>{lw}} {mounting:>{mw}} {len(rs):>5} "
-              f"{rate:>9.2f} {rssi:>7.0f} "
-              f"{(f'{pdr:.2f}' if pdr is not None else '-'):>6}")
+              f"{_fmt(rate, '9.2f'):>9} {_fmt(rssi, '7.0f'):>7} "
+              f"{_fmt(pdr, '.2f'):>6}")
 
     # Per-location comparison against a baseline series.
     base = baseline or ("direct" if "direct" in mountings else mountings[0])
@@ -315,6 +318,11 @@ def analyze(path, baseline=None, plot_path=None):
     if plot_path is not False:
         _plot(summary, locations, mountings,
               plot_path or (os.path.splitext(path)[0] + ".png"))
+
+
+def _fmt(value, spec):
+    """Format a number with ``spec``, rendering None as '-'."""
+    return format(value, spec) if value is not None else "-"
 
 
 def _loc_key(loc):
