@@ -98,8 +98,10 @@ HCI_EVENT_PKT = 0x04
 HCI_LE_META_EVENT = 0x3E
 HCI_SUBEVENT_EXT_ADV_REPORT = 0x0D
 
-# Scanning_PHYs bit for LE Coded PHY (long range)
+# Scanning_PHYs bits: LE 1M PHY (0x01) and LE Coded PHY / long range (0x04).
+SCAN_PHY_1M = 0x01
 SCAN_PHY_CODED = 0x04
+SCAN_PHY_BY_NAME = {"1m": SCAN_PHY_1M, "coded": SCAN_PHY_CODED}
 
 # AD structure types
 AD_TYPE_UUID16_INCOMPLETE = 0x02
@@ -452,6 +454,15 @@ class HciCodedScanBackend(ScanBackend):
         )
         self.interval = int(hci.get("interval", DEFAULT_HCI_INTERVAL))
         self.window = int(hci.get("window", DEFAULT_HCI_WINDOW))
+        # Which primary PHY to scan. This controller can't scan 1M+Coded at
+        # once (the reason this raw backend exists), so a single PHY per run.
+        self.phy = str(hci.get("phy", "coded")).lower()
+        if self.phy not in SCAN_PHY_BY_NAME:
+            raise ValueError(
+                f"hci_coded.phy must be one of {list(SCAN_PHY_BY_NAME)}, "
+                f"got {self.phy!r}"
+            )
+        self.scan_phy = SCAN_PHY_BY_NAME[self.phy]
         self.random_address = hci.get("random_address", DEFAULT_HCI_RANDOM_ADDR)
         self.power_on_at_shutdown = bool(hci.get("power_on_at_shutdown", True))
 
@@ -563,8 +574,10 @@ class HciCodedScanBackend(ScanBackend):
             self._random_addr_le(),
             "LE Set Random Address",
         )
-        # LE Set Extended Scan Parameters: own=Random, filter=all, Coded PHY only.
-        params = struct.pack("<BBB", 0x01, 0x00, SCAN_PHY_CODED) + struct.pack(
+        # LE Set Extended Scan Parameters: own=Random, filter=all, single PHY
+        # (1M or Coded per config). One (type,interval,window) triplet follows
+        # the Scanning_PHYs byte, matching the single bit set there.
+        params = struct.pack("<BBB", 0x01, 0x00, self.scan_phy) + struct.pack(
             "<BHH", self.scan_type, self.interval, self.window
         )
         st = self._cmd_sync(
@@ -590,7 +603,8 @@ class HciCodedScanBackend(ScanBackend):
         sock.settimeout(0.5)  # short timeout so the recv loop can poll _stop
         self._sock = sock
         self.logger.info(
-            f"Scan backend: hci_coded (hci{self.dev_id}, Coded PHY only, "
+            f"Scan backend: hci_coded (hci{self.dev_id}, "
+            f"{self.phy.upper()} PHY only, "
             f"scan_type={'active' if self.scan_type else 'passive'})"
         )
 
