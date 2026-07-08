@@ -396,14 +396,30 @@ class BlueZScanBackend(ScanBackend):
             # it in bluez_args silently no-ops, so bleak scans the default adapter.
             scanner_kwargs["adapter"] = adapter
 
-        # Hardware-level service UUID filtering via SetDiscoveryFilter.
+        # Hardware-level service UUID filtering via SetDiscoveryFilter. This
+        # drops every advert lacking a whitelisted UUID *before* the software
+        # PayloadFilter runs, which would break the OR semantics of the other
+        # whitelists (a MAC-whitelisted device that doesn't advertise a
+        # whitelisted UUID would never be seen). Only enable the hardware filter
+        # when the service-UUID whitelist is the *only* whitelist configured;
+        # otherwise scan unfiltered and let PayloadFilter apply the OR logic.
         service_uuids = None
         wl = self.config.get("service_uuid_whitelist")
-        if wl:
+        other_whitelists = any(
+            self.config.get(k)
+            for k in ("mac_whitelist", "name_whitelist", "manufacturer_id_whitelist")
+        )
+        if wl and not other_whitelists:
             service_uuids = list(wl)
             self.logger.info(
                 f"Hardware-level filtering enabled for {len(service_uuids)} "
                 f"service UUID(s): {service_uuids}"
+            )
+        elif wl and other_whitelists:
+            self.logger.info(
+                "service_uuid_whitelist combined with another whitelist; "
+                "scanning unfiltered and applying whitelists in software to "
+                "preserve OR semantics"
             )
 
         if bluez_available:

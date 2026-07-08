@@ -54,3 +54,25 @@ def test_no_adapter_kwarg_when_unset(capture_scanner):
     asyncio.run(backend.start())
 
     assert "adapter" not in capture_scanner
+
+
+def test_hw_service_uuid_filter_when_sole_whitelist(capture_scanner):
+    cfg = {"scan_backend": "bluez", "service_uuid_whitelist": ["0000fd6f-0000-1000-8000-00805f9b34fb"]}
+    backend = BlueZScanBackend(cfg, lambda _m: None, _logger())
+    asyncio.run(backend.start())
+
+    assert capture_scanner.get("service_uuids") == ["0000fd6f-0000-1000-8000-00805f9b34fb"]
+
+
+def test_hw_filter_disabled_when_combined_with_other_whitelist(capture_scanner):
+    # A MAC whitelist alongside the UUID whitelist must NOT push a hardware
+    # filter, or the OR semantics break (MAC-only devices vanish).
+    cfg = {
+        "scan_backend": "bluez",
+        "service_uuid_whitelist": ["0000fd6f-0000-1000-8000-00805f9b34fb"],
+        "mac_whitelist": ["AA:BB:CC:DD:EE:FF"],
+    }
+    backend = BlueZScanBackend(cfg, lambda _m: None, _logger())
+    asyncio.run(backend.start())
+
+    assert capture_scanner.get("service_uuids") is None
