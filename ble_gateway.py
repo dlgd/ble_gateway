@@ -295,6 +295,13 @@ class MQTTPublisher:
         self.client = None
         self.connection_event = asyncio.Event()
 
+        # Delivery accounting. paho's synchronous publish() return code only says
+        # the message was *queued*, so confirmed deliveries are counted in
+        # _on_publish (broker PUBACK) instead, and messages queued while offline
+        # are tracked separately rather than logged as publish errors.
+        self.messages_delivered = 0
+        self.messages_queued_offline = 0
+
         # Configure authentication
         if auth_type == "mtls":
             self._configure_mtls(tls_config or {})
@@ -348,15 +355,11 @@ class MQTTPublisher:
             )
         else:
             self.connected = False
-            error_messages = {
-                1: "Connection refused - incorrect protocol version",
-                2: "Connection refused - invalid client identifier",
-                3: "Connection refused - server unavailable",
-                4: "Connection refused - bad username or password",
-                5: "Connection refused - not authorized",
-            }
-            error_msg = error_messages.get(rc, f"Unknown error code: {rc}")
-            self.logger.error(f"{ICON_ERROR} Connection failed: {error_msg}")
+            # Under CallbackAPIVersion.VERSION2 rc is a ReasonCode with MQTT5-style
+            # values (e.g. 135 = Not authorized) even for v3.1.1 brokers, so the
+            # old 1..5 CONNACK table mislabelled real failures. ReasonCode.__str__
+            # already yields a human-readable name.
+            self.logger.error(f"{ICON_ERROR} Connection failed: {rc}")
 
     def _on_disconnect(self, client, userdata, flags, rc, properties=None):
         """Callback when connection is lost."""
@@ -380,24 +383,26 @@ class MQTTPublisher:
             self.logger.info("Disconnected from MQTT broker")
 
     def _on_publish(self, client, userdata, mid, rc=None, properties=None):
-        """Callback when message is published."""
-        self.logger.debug(f"Message published successfully (mid={mid})")
+        """Callback when the broker confirms delivery (PUBACK for QoS 1)."""
+        self.messages_delivered += 1
+        self.logger.debug(f"Message delivery confirmed (mid={mid})")
 
     async def connect(self) -> bool:
         """Establish connection to MQTT broker."""
         try:
             self.logger.info(f"Connecting to MQTT broker: {self.broker}:{self.port}")
 
-            # Create MQTT client (paho-mqtt v2.0+ uses CallbackAPIVersion)
-            try:
-                self.client = mqtt.Client(
-                    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                    client_id=self.client_id,
-                    clean_session=True,
-                )
-            except TypeError:
-                # Fallback for older paho-mqtt versions
-                self.client = mqtt.Client(client_id=self.client_id, clean_session=True)
+            # Create MQTT client. This project requires paho-mqtt >= 2.1 (see
+            # pyproject.toml / requirements.txt), so use the VERSION2 callback API
+            # directly — the previous v1 fallback could never work: paho 1.x has
+            # no CallbackAPIVersion attribute (raising AttributeError, which the
+            # fallback didn't catch) and the v2 callback signatures used here are
+            # incompatible with v1 anyway.
+            self.client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self.client_id,
+                clean_session=True,
+            )
 
             # Set callbacks
             self.client.on_connect = self._on_connect
@@ -458,6 +463,16 @@ class MQTTPublisher:
                     f"MQTT publish queued - Topic: {self.topic}, "
                     f"QoS: {self.qos}, "
                     f"Payload length: {len(message)} bytes"
+                )
+                return True
+            elif result.rc == mqtt.MQTT_ERR_NO_CONN:
+                # Not an error: paho queues the message and redelivers it on
+                # reconnect. Counting this as a failure falsely suggests data
+                # loss during a transient broker outage.
+                self.messages_queued_offline += 1
+                self.logger.warning(
+                    f"{ICON_WARNING} Broker offline; message queued for redelivery "
+                    "on reconnect"
                 )
                 return True
             else:
@@ -819,7 +834,12 @@ class BluetoothGateway:
             messages = self.message_buffer.get_messages()
             for ble_message in messages:
                 try:
-                    json_payload = ble_message.to_json()
+                    # Use the SAME GPRP envelope as the normal publish path — the
+                    # raw to_json() schema is not understood by the GPRP consumer,
+                    # so shutdown-buffered records were silently lost/misprocessed.
+                    json_payload = ble_message.to_gprp_format(
+                        gateway_mac=self.gateway_mac, topic=self.topic
+                    )
                     self.publisher.publish(json_payload)
                 except Exception as e:
                     self.logger.error(f"{ICON_ERROR} Error flushing message: {e}")
@@ -829,6 +849,39 @@ class BluetoothGateway:
             self.publisher.disconnect()
             self.logger.info("Gateway stopped")
             self.logger.info(f"Final stats: {self.stats}")
+            self.logger.info(
+                f"MQTT delivery: confirmed={self.publisher.messages_delivered}, "
+                f"queued_while_offline={self.publisher.messages_queued_offline}"
+            )
+
+
+def _normalize_mac(entry) -> str:
+    """Canonicalize a MAC whitelist entry to colon-separated uppercase.
+
+    Accepts ``AA:BB:CC:DD:EE:FF``, ``aabbccddeeff`` or ``AA-BB-...`` forms so a
+    user's formatting/case doesn't silently drop the device (msg.device_address
+    is compared uppercased with colons).
+    """
+    raw = str(entry).replace(":", "").replace("-", "").strip()
+    if len(raw) != 12 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        raise ValueError(f"Invalid MAC address in mac_whitelist: {entry!r}")
+    raw = raw.upper()
+    return ":".join(raw[i : i + 2] for i in range(0, 12, 2))
+
+
+def _normalize_service_uuid(entry) -> str:
+    """Canonicalize a service-UUID whitelist entry to bleak's lowercase form.
+
+    Both scan backends emit lowercase canonical 128-bit UUID strings, so entries
+    must be lowercased (and 16-/32-bit short forms expanded to Base-UUID form)
+    or they never match.
+    """
+    raw = str(entry).replace("-", "").strip().lower()
+    if len(raw) in (4, 8):  # 16-/32-bit short form -> Base UUID
+        raw = raw.zfill(8) + "00001000800000805f9b34fb"
+    if len(raw) != 32 or any(c not in "0123456789abcdef" for c in raw):
+        raise ValueError(f"Invalid service UUID in service_uuid_whitelist: {entry!r}")
+    return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
 
 
 def load_config(config_path: str) -> dict:
@@ -899,6 +952,10 @@ def load_config(config_path: str) -> dict:
             raise ValueError(
                 f"hci_coded.scan_type must be 'active' or 'passive', got: {hci['scan_type']}"
             )
+        if "phy" in hci and str(hci["phy"]).lower() not in ("1m", "coded"):
+            raise ValueError(
+                f"hci_coded.phy must be '1m' or 'coded', got: {hci['phy']}"
+            )
         for key in ("interval", "window"):
             if key in hci and (not isinstance(hci[key], int) or not 0 < hci[key] <= 0xFFFF):
                 raise ValueError(
@@ -916,7 +973,11 @@ def load_config(config_path: str) -> dict:
                     f"hci_coded.random_address must be 'XX:XX:XX:XX:XX:XX', got: {addr}"
                 )
             try:
-                msb = int(parts[0], 16)
+                # Validate every octet is hex, not just the first — otherwise a
+                # bad octet like 'ZZ' only blows up later in _random_addr_le()
+                # during scan startup.
+                octets = [int(p, 16) for p in parts]
+                msb = octets[0]
             except ValueError as e:
                 raise ValueError(
                     f"hci_coded.random_address has invalid hex: {addr}"
@@ -942,6 +1003,16 @@ def load_config(config_path: str) -> dict:
             raise ValueError(
                 f"hci_coded.probe_seconds must be a non-negative number, got: {probe}"
             )
+
+    # Normalize whitelist entries so formatting/case differences don't silently
+    # drop wanted devices (and so the same normalized values reach both the
+    # software PayloadFilter and bleak's hardware filter).
+    if "mac_whitelist" in config:
+        config["mac_whitelist"] = [_normalize_mac(m) for m in config["mac_whitelist"]]
+    if "service_uuid_whitelist" in config:
+        config["service_uuid_whitelist"] = [
+            _normalize_service_uuid(u) for u in config["service_uuid_whitelist"]
+        ]
 
     # or_patterns was used by the removed passive scanning mode. Warn and ignore.
     if "or_patterns" in config:

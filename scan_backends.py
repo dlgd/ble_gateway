@@ -98,8 +98,10 @@ HCI_EVENT_PKT = 0x04
 HCI_LE_META_EVENT = 0x3E
 HCI_SUBEVENT_EXT_ADV_REPORT = 0x0D
 
-# Scanning_PHYs bit for LE Coded PHY (long range)
+# Scanning_PHYs bits: LE 1M PHY (0x01) and LE Coded PHY / long range (0x04).
+SCAN_PHY_1M = 0x01
 SCAN_PHY_CODED = 0x04
+SCAN_PHY_BY_NAME = {"1m": SCAN_PHY_1M, "coded": SCAN_PHY_CODED}
 
 # AD structure types
 AD_TYPE_UUID16_INCOMPLETE = 0x02
@@ -127,14 +129,17 @@ DEFAULT_HCI_RANDOM_ADDR = "DE:DE:DE:DE:DE:C0"
 DEFAULT_HCI_PROBE_SECONDS = 0.0
 
 # Substrings (lower-cased) that identify the BlueZ multi-PHY rejection pattern
-# bleak surfaces when the controller can't scan 1M+Coded together.
+# bleak surfaces when the controller can't scan 1M+Coded together. Deliberately
+# NOT including the catch-all "org.bluez.error": it matches essentially every
+# BlueZ/D-Bus failure (permission denied, adapter missing, discovery already in
+# progress from another app), which would silently switch the gateway to the
+# exclusive-control hci_coded backend and kick bluetoothd off the radio.
 _MULTIPHY_REJECTION_MARKERS = (
     "inprogress",
     "in progress",
     "notready",
     "not ready",
     "not supported",
-    "org.bluez.error",
 )
 
 
@@ -389,19 +394,35 @@ class BlueZScanBackend(ScanBackend):
         adapter = self.config.get("bluetooth_adapter")
         if adapter:
             self.logger.info(f"Using Bluetooth adapter: {adapter}")
-            if bluez_available:
-                bluez_args["adapter"] = adapter
-            else:
-                scanner_kwargs["adapter"] = adapter
+            # The adapter is a top-level BleakScanner kwarg, NOT a BlueZScannerArgs
+            # field (that TypedDict only carries `filters`/`or_patterns`). Putting
+            # it in bluez_args silently no-ops, so bleak scans the default adapter.
+            scanner_kwargs["adapter"] = adapter
 
-        # Hardware-level service UUID filtering via SetDiscoveryFilter.
+        # Hardware-level service UUID filtering via SetDiscoveryFilter. This
+        # drops every advert lacking a whitelisted UUID *before* the software
+        # PayloadFilter runs, which would break the OR semantics of the other
+        # whitelists (a MAC-whitelisted device that doesn't advertise a
+        # whitelisted UUID would never be seen). Only enable the hardware filter
+        # when the service-UUID whitelist is the *only* whitelist configured;
+        # otherwise scan unfiltered and let PayloadFilter apply the OR logic.
         service_uuids = None
         wl = self.config.get("service_uuid_whitelist")
-        if wl:
+        other_whitelists = any(
+            self.config.get(k)
+            for k in ("mac_whitelist", "name_whitelist", "manufacturer_id_whitelist")
+        )
+        if wl and not other_whitelists:
             service_uuids = list(wl)
             self.logger.info(
                 f"Hardware-level filtering enabled for {len(service_uuids)} "
                 f"service UUID(s): {service_uuids}"
+            )
+        elif wl and other_whitelists:
+            self.logger.info(
+                "service_uuid_whitelist combined with another whitelist; "
+                "scanning unfiltered and applying whitelists in software to "
+                "preserve OR semantics"
             )
 
         if bluez_available:
@@ -452,6 +473,15 @@ class HciCodedScanBackend(ScanBackend):
         )
         self.interval = int(hci.get("interval", DEFAULT_HCI_INTERVAL))
         self.window = int(hci.get("window", DEFAULT_HCI_WINDOW))
+        # Which primary PHY to scan. This controller can't scan 1M+Coded at
+        # once (the reason this raw backend exists), so a single PHY per run.
+        self.phy = str(hci.get("phy", "coded")).lower()
+        if self.phy not in SCAN_PHY_BY_NAME:
+            raise ValueError(
+                f"hci_coded.phy must be one of {list(SCAN_PHY_BY_NAME)}, "
+                f"got {self.phy!r}"
+            )
+        self.scan_phy = SCAN_PHY_BY_NAME[self.phy]
         self.random_address = hci.get("random_address", DEFAULT_HCI_RANDOM_ADDR)
         self.power_on_at_shutdown = bool(hci.get("power_on_at_shutdown", True))
 
@@ -524,8 +554,11 @@ class HciCodedScanBackend(ScanBackend):
         sock = None
         last_err = None
         # Down the controller, then bind the user channel. bluetoothd may briefly
-        # race to re-power the device, so retry the down+bind a few times.
+        # race to re-power the device, so retry the down+bind a few times. Bail
+        # out promptly if stop() fired so a shutdown-time recovery can't block.
         for _ in range(10):
+            if self._stop.is_set():
+                raise OSError("stop requested during HCI open")
             self._set_powered(False)
             sock = socket.socket(
                 AF_BLUETOOTH, socket.SOCK_RAW | socket.SOCK_CLOEXEC, BTPROTO_HCI
@@ -563,8 +596,10 @@ class HciCodedScanBackend(ScanBackend):
             self._random_addr_le(),
             "LE Set Random Address",
         )
-        # LE Set Extended Scan Parameters: own=Random, filter=all, Coded PHY only.
-        params = struct.pack("<BBB", 0x01, 0x00, SCAN_PHY_CODED) + struct.pack(
+        # LE Set Extended Scan Parameters: own=Random, filter=all, single PHY
+        # (1M or Coded per config). One (type,interval,window) triplet follows
+        # the Scanning_PHYs byte, matching the single bit set there.
+        params = struct.pack("<BBB", 0x01, 0x00, self.scan_phy) + struct.pack(
             "<BHH", self.scan_type, self.interval, self.window
         )
         st = self._cmd_sync(
@@ -587,10 +622,18 @@ class HciCodedScanBackend(ScanBackend):
             sock.close()
             raise OSError(f"LE Set Extended Scan Enable rejected (status 0x{st:02X})")
 
+        # If stop() fired while we were configuring, don't install (and thus
+        # re-bind) the user channel — close it and let stop() power the adapter
+        # back on so bluetoothd can reclaim it.
+        if self._stop.is_set():
+            sock.close()
+            raise OSError("stop requested during HCI open")
+
         sock.settimeout(0.5)  # short timeout so the recv loop can poll _stop
         self._sock = sock
         self.logger.info(
-            f"Scan backend: hci_coded (hci{self.dev_id}, Coded PHY only, "
+            f"Scan backend: hci_coded (hci{self.dev_id}, "
+            f"{self.phy.upper()} PHY only, "
             f"scan_type={'active' if self.scan_type else 'passive'})"
         )
 
@@ -607,16 +650,27 @@ class HciCodedScanBackend(ScanBackend):
     def _recv_loop(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
+            # Copy the socket to a local: stop()/recovery can set self._sock to
+            # None between iterations, and recv() on None would raise an
+            # unhandled AttributeError that kills this thread with a traceback.
+            sock = self._sock
+            if sock is None:
+                break
             try:
-                pkt = self._sock.recv(1024)
+                pkt = sock.recv(1024)
             except socket.timeout:
                 continue
-            except OSError as e:
+            except (OSError, AttributeError) as e:
                 if self._stop.is_set():
                     break
                 self.logger.warning(f"HCI socket error ({e}); attempting recovery")
                 self._safe_close()
                 if not self._reopen_with_backoff():
+                    break
+                if self._stop.is_set():
+                    # stop() fired during reopen: release the freshly-opened
+                    # socket and let stop()'s power-on restore bluetoothd.
+                    self._safe_close()
                     break
                 backoff = 1.0
                 continue
@@ -641,6 +695,9 @@ class HciCodedScanBackend(ScanBackend):
                 self.logger.info("HCI scan re-established after recovery")
                 return True
             except Exception as e:
+                if self._stop.is_set():
+                    # Aborted because stop() fired mid-open, not a real failure.
+                    return False
                 self.logger.warning(
                     f"HCI re-open failed ({e}); retrying in {delay:.0f}s"
                 )
@@ -716,6 +773,14 @@ class AutoScanBackend(ScanBackend):
             await bluez.start()
         except Exception as e:
             if self._is_multiphy_rejection(e):
+                # Log the full original exception before falling back so a real
+                # multi-PHY rejection is distinguishable from a look-alike and
+                # the root cause isn't hidden behind the fallback warning.
+                self.logger.warning(
+                    "BlueZ scan start failed with a multi-PHY rejection pattern; "
+                    "falling back to hci_coded",
+                    exc_info=e,
+                )
                 await self._fall_back(str(e))
                 return
             raise
