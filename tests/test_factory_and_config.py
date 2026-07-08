@@ -103,3 +103,33 @@ def test_load_config_rejects_non_static_random_address(tmp_path):
 def test_load_config_rejects_bad_scan_type(tmp_path):
     with pytest.raises(ValueError):
         load_config(_write_cfg(tmp_path, {"hci_coded": {"scan_type": "sniff"}}))
+
+
+def test_load_config_normalizes_mac_whitelist(tmp_path):
+    cfg = load_config(
+        _write_cfg(tmp_path, {"mac_whitelist": ["aabbccddeeff", "11:22:33:44:55:66"]})
+    )
+    assert cfg["mac_whitelist"] == ["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"]
+
+
+def test_load_config_normalizes_service_uuid_whitelist(tmp_path):
+    cfg = load_config(
+        _write_cfg(
+            tmp_path,
+            {"service_uuid_whitelist": ["0000EFF0-EFF0-1212-1515-EEFFD1024132", "FD6F"]},
+        )
+    )
+    assert cfg["service_uuid_whitelist"] == [
+        "0000eff0-eff0-1212-1515-eeffd1024132",
+        "0000fd6f-0000-1000-8000-00805f9b34fb",
+    ]
+
+
+def test_load_config_rejects_bad_mac(tmp_path):
+    with pytest.raises(ValueError):
+        load_config(_write_cfg(tmp_path, {"mac_whitelist": ["not-a-mac"]}))
+
+
+def test_load_config_rejects_bad_service_uuid(tmp_path):
+    with pytest.raises(ValueError):
+        load_config(_write_cfg(tmp_path, {"service_uuid_whitelist": ["xyz"]}))

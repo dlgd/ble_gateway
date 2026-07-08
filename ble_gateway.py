@@ -837,6 +837,35 @@ class BluetoothGateway:
             self.logger.info(f"Final stats: {self.stats}")
 
 
+def _normalize_mac(entry) -> str:
+    """Canonicalize a MAC whitelist entry to colon-separated uppercase.
+
+    Accepts ``AA:BB:CC:DD:EE:FF``, ``aabbccddeeff`` or ``AA-BB-...`` forms so a
+    user's formatting/case doesn't silently drop the device (msg.device_address
+    is compared uppercased with colons).
+    """
+    raw = str(entry).replace(":", "").replace("-", "").strip()
+    if len(raw) != 12 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        raise ValueError(f"Invalid MAC address in mac_whitelist: {entry!r}")
+    raw = raw.upper()
+    return ":".join(raw[i : i + 2] for i in range(0, 12, 2))
+
+
+def _normalize_service_uuid(entry) -> str:
+    """Canonicalize a service-UUID whitelist entry to bleak's lowercase form.
+
+    Both scan backends emit lowercase canonical 128-bit UUID strings, so entries
+    must be lowercased (and 16-/32-bit short forms expanded to Base-UUID form)
+    or they never match.
+    """
+    raw = str(entry).replace("-", "").strip().lower()
+    if len(raw) in (4, 8):  # 16-/32-bit short form -> Base UUID
+        raw = raw.zfill(8) + "00001000800000805f9b34fb"
+    if len(raw) != 32 or any(c not in "0123456789abcdef" for c in raw):
+        raise ValueError(f"Invalid service UUID in service_uuid_whitelist: {entry!r}")
+    return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
+
+
 def load_config(config_path: str) -> dict:
     """Load and validate configuration from JSON file."""
     try:
@@ -948,6 +977,16 @@ def load_config(config_path: str) -> dict:
             raise ValueError(
                 f"hci_coded.probe_seconds must be a non-negative number, got: {probe}"
             )
+
+    # Normalize whitelist entries so formatting/case differences don't silently
+    # drop wanted devices (and so the same normalized values reach both the
+    # software PayloadFilter and bleak's hardware filter).
+    if "mac_whitelist" in config:
+        config["mac_whitelist"] = [_normalize_mac(m) for m in config["mac_whitelist"]]
+    if "service_uuid_whitelist" in config:
+        config["service_uuid_whitelist"] = [
+            _normalize_service_uuid(u) for u in config["service_uuid_whitelist"]
+        ]
 
     # or_patterns was used by the removed passive scanning mode. Warn and ignore.
     if "or_patterns" in config:
