@@ -129,14 +129,17 @@ DEFAULT_HCI_RANDOM_ADDR = "DE:DE:DE:DE:DE:C0"
 DEFAULT_HCI_PROBE_SECONDS = 0.0
 
 # Substrings (lower-cased) that identify the BlueZ multi-PHY rejection pattern
-# bleak surfaces when the controller can't scan 1M+Coded together.
+# bleak surfaces when the controller can't scan 1M+Coded together. Deliberately
+# NOT including the catch-all "org.bluez.error": it matches essentially every
+# BlueZ/D-Bus failure (permission denied, adapter missing, discovery already in
+# progress from another app), which would silently switch the gateway to the
+# exclusive-control hci_coded backend and kick bluetoothd off the radio.
 _MULTIPHY_REJECTION_MARKERS = (
     "inprogress",
     "in progress",
     "notready",
     "not ready",
     "not supported",
-    "org.bluez.error",
 )
 
 
@@ -746,6 +749,14 @@ class AutoScanBackend(ScanBackend):
             await bluez.start()
         except Exception as e:
             if self._is_multiphy_rejection(e):
+                # Log the full original exception before falling back so a real
+                # multi-PHY rejection is distinguishable from a look-alike and
+                # the root cause isn't hidden behind the fallback warning.
+                self.logger.warning(
+                    "BlueZ scan start failed with a multi-PHY rejection pattern; "
+                    "falling back to hci_coded",
+                    exc_info=e,
+                )
                 await self._fall_back(str(e))
                 return
             raise
