@@ -388,16 +388,17 @@ class MQTTPublisher:
         try:
             self.logger.info(f"Connecting to MQTT broker: {self.broker}:{self.port}")
 
-            # Create MQTT client (paho-mqtt v2.0+ uses CallbackAPIVersion)
-            try:
-                self.client = mqtt.Client(
-                    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                    client_id=self.client_id,
-                    clean_session=True,
-                )
-            except TypeError:
-                # Fallback for older paho-mqtt versions
-                self.client = mqtt.Client(client_id=self.client_id, clean_session=True)
+            # Create MQTT client. This project requires paho-mqtt >= 2.1 (see
+            # pyproject.toml / requirements.txt), so use the VERSION2 callback API
+            # directly — the previous v1 fallback could never work: paho 1.x has
+            # no CallbackAPIVersion attribute (raising AttributeError, which the
+            # fallback didn't catch) and the v2 callback signatures used here are
+            # incompatible with v1 anyway.
+            self.client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self.client_id,
+                clean_session=True,
+            )
 
             # Set callbacks
             self.client.on_connect = self._on_connect
