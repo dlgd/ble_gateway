@@ -554,8 +554,11 @@ class HciCodedScanBackend(ScanBackend):
         sock = None
         last_err = None
         # Down the controller, then bind the user channel. bluetoothd may briefly
-        # race to re-power the device, so retry the down+bind a few times.
+        # race to re-power the device, so retry the down+bind a few times. Bail
+        # out promptly if stop() fired so a shutdown-time recovery can't block.
         for _ in range(10):
+            if self._stop.is_set():
+                raise OSError("stop requested during HCI open")
             self._set_powered(False)
             sock = socket.socket(
                 AF_BLUETOOTH, socket.SOCK_RAW | socket.SOCK_CLOEXEC, BTPROTO_HCI
@@ -619,6 +622,13 @@ class HciCodedScanBackend(ScanBackend):
             sock.close()
             raise OSError(f"LE Set Extended Scan Enable rejected (status 0x{st:02X})")
 
+        # If stop() fired while we were configuring, don't install (and thus
+        # re-bind) the user channel — close it and let stop() power the adapter
+        # back on so bluetoothd can reclaim it.
+        if self._stop.is_set():
+            sock.close()
+            raise OSError("stop requested during HCI open")
+
         sock.settimeout(0.5)  # short timeout so the recv loop can poll _stop
         self._sock = sock
         self.logger.info(
@@ -640,16 +650,27 @@ class HciCodedScanBackend(ScanBackend):
     def _recv_loop(self) -> None:
         backoff = 1.0
         while not self._stop.is_set():
+            # Copy the socket to a local: stop()/recovery can set self._sock to
+            # None between iterations, and recv() on None would raise an
+            # unhandled AttributeError that kills this thread with a traceback.
+            sock = self._sock
+            if sock is None:
+                break
             try:
-                pkt = self._sock.recv(1024)
+                pkt = sock.recv(1024)
             except socket.timeout:
                 continue
-            except OSError as e:
+            except (OSError, AttributeError) as e:
                 if self._stop.is_set():
                     break
                 self.logger.warning(f"HCI socket error ({e}); attempting recovery")
                 self._safe_close()
                 if not self._reopen_with_backoff():
+                    break
+                if self._stop.is_set():
+                    # stop() fired during reopen: release the freshly-opened
+                    # socket and let stop()'s power-on restore bluetoothd.
+                    self._safe_close()
                     break
                 backoff = 1.0
                 continue
@@ -674,6 +695,9 @@ class HciCodedScanBackend(ScanBackend):
                 self.logger.info("HCI scan re-established after recovery")
                 return True
             except Exception as e:
+                if self._stop.is_set():
+                    # Aborted because stop() fired mid-open, not a real failure.
+                    return False
                 self.logger.warning(
                     f"HCI re-open failed ({e}); retrying in {delay:.0f}s"
                 )
