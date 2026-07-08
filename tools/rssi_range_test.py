@@ -112,21 +112,28 @@ async def capture(args, config, logger):
         f"location={args.distance}, phy={phy})"
     )
     await backend.start()
+    start = time.monotonic()
     try:
         # Sleep in small slices so a Ctrl-C is responsive and we can show a
-        # live heartbeat of the running count.
-        end = time.monotonic() + args.secs
-        while time.monotonic() < end:
-            await asyncio.sleep(2.0)
+        # live heartbeat of the running count. Cap the final slice at the
+        # remaining time so the window doesn't overshoot args.secs by up to 2s
+        # (which would inflate rate_hz — the metric this tool exists to compare).
+        end = start + args.secs
+        while True:
+            now = time.monotonic()
+            if now >= end:
+                break
+            await asyncio.sleep(min(2.0, end - now))
             seen = sum(len(v) for v in records.values())
             print(f"  ... {seen} adverts", end="\r", flush=True)
     finally:
+        elapsed = time.monotonic() - start
         await backend.stop()
         print()
-    return records
+    return records, elapsed
 
 
-def summarize(records, args, phy):
+def summarize(records, args, phy, elapsed):
     """Pick the target device and compute its stats."""
     if not records:
         return None, "no adverts received"
@@ -153,7 +160,9 @@ def summarize(records, args, phy):
     rssis = [r for _, r in samples]
     times = sorted(t for t, _ in samples)
     count = len(samples)
-    rate_hz = count / args.secs
+    # Divide by the measured window, not the nominal args.secs, so backend
+    # start/stop latency and slice granularity don't skew the comparison.
+    rate_hz = count / elapsed if elapsed > 0 else 0.0
 
     # Estimate the advertising interval from median inter-arrival (informational
     # — and a sanity check against the --interval you passed).
@@ -168,7 +177,7 @@ def summarize(records, args, phy):
 
     pdr = None
     if args.interval:
-        expected = args.secs / args.interval
+        expected = elapsed / args.interval
         pdr = min(1.0, count / expected) if expected else None
 
     row = {
@@ -438,8 +447,8 @@ def main():
         hc["phy"] = phy
         config["hci_coded"] = hc
 
-        records = asyncio.run(capture(args, config, logger))
-        row, err = summarize(records, args, phy)
+        records, elapsed = asyncio.run(capture(args, config, logger))
+        row, err = summarize(records, args, phy, elapsed)
         if err:
             logger.error(f"[phy={phy}] {err}")
             failures += 1
