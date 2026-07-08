@@ -819,7 +819,12 @@ class BluetoothGateway:
             messages = self.message_buffer.get_messages()
             for ble_message in messages:
                 try:
-                    json_payload = ble_message.to_json()
+                    # Use the SAME GPRP envelope as the normal publish path — the
+                    # raw to_json() schema is not understood by the GPRP consumer,
+                    # so shutdown-buffered records were silently lost/misprocessed.
+                    json_payload = ble_message.to_gprp_format(
+                        gateway_mac=self.gateway_mac, topic=self.topic
+                    )
                     self.publisher.publish(json_payload)
                 except Exception as e:
                     self.logger.error(f"{ICON_ERROR} Error flushing message: {e}")
