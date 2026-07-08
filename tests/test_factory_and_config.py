@@ -105,6 +105,16 @@ def test_load_config_rejects_bad_scan_type(tmp_path):
         load_config(_write_cfg(tmp_path, {"hci_coded": {"scan_type": "sniff"}}))
 
 
+def test_load_config_rejects_bad_phy(tmp_path):
+    with pytest.raises(ValueError):
+        load_config(_write_cfg(tmp_path, {"hci_coded": {"phy": "2m"}}))
+
+
+def test_load_config_accepts_valid_phy(tmp_path):
+    cfg = load_config(_write_cfg(tmp_path, {"hci_coded": {"phy": "1m"}}))
+    assert cfg["hci_coded"]["phy"] == "1m"
+
+
 def test_load_config_normalizes_mac_whitelist(tmp_path):
     cfg = load_config(
         _write_cfg(tmp_path, {"mac_whitelist": ["aabbccddeeff", "11:22:33:44:55:66"]})

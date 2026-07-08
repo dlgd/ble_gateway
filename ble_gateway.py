@@ -934,6 +934,10 @@ def load_config(config_path: str) -> dict:
             raise ValueError(
                 f"hci_coded.scan_type must be 'active' or 'passive', got: {hci['scan_type']}"
             )
+        if "phy" in hci and str(hci["phy"]).lower() not in ("1m", "coded"):
+            raise ValueError(
+                f"hci_coded.phy must be '1m' or 'coded', got: {hci['phy']}"
+            )
         for key in ("interval", "window"):
             if key in hci and (not isinstance(hci[key], int) or not 0 < hci[key] <= 0xFFFF):
                 raise ValueError(
