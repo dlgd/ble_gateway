@@ -295,6 +295,13 @@ class MQTTPublisher:
         self.client = None
         self.connection_event = asyncio.Event()
 
+        # Delivery accounting. paho's synchronous publish() return code only says
+        # the message was *queued*, so confirmed deliveries are counted in
+        # _on_publish (broker PUBACK) instead, and messages queued while offline
+        # are tracked separately rather than logged as publish errors.
+        self.messages_delivered = 0
+        self.messages_queued_offline = 0
+
         # Configure authentication
         if auth_type == "mtls":
             self._configure_mtls(tls_config or {})
@@ -380,8 +387,9 @@ class MQTTPublisher:
             self.logger.info("Disconnected from MQTT broker")
 
     def _on_publish(self, client, userdata, mid, rc=None, properties=None):
-        """Callback when message is published."""
-        self.logger.debug(f"Message published successfully (mid={mid})")
+        """Callback when the broker confirms delivery (PUBACK for QoS 1)."""
+        self.messages_delivered += 1
+        self.logger.debug(f"Message delivery confirmed (mid={mid})")
 
     async def connect(self) -> bool:
         """Establish connection to MQTT broker."""
@@ -459,6 +467,16 @@ class MQTTPublisher:
                     f"MQTT publish queued - Topic: {self.topic}, "
                     f"QoS: {self.qos}, "
                     f"Payload length: {len(message)} bytes"
+                )
+                return True
+            elif result.rc == mqtt.MQTT_ERR_NO_CONN:
+                # Not an error: paho queues the message and redelivers it on
+                # reconnect. Counting this as a failure falsely suggests data
+                # loss during a transient broker outage.
+                self.messages_queued_offline += 1
+                self.logger.warning(
+                    f"{ICON_WARNING} Broker offline; message queued for redelivery "
+                    "on reconnect"
                 )
                 return True
             else:
@@ -835,6 +853,10 @@ class BluetoothGateway:
             self.publisher.disconnect()
             self.logger.info("Gateway stopped")
             self.logger.info(f"Final stats: {self.stats}")
+            self.logger.info(
+                f"MQTT delivery: confirmed={self.publisher.messages_delivered}, "
+                f"queued_while_offline={self.publisher.messages_queued_offline}"
+            )
 
 
 def _normalize_mac(entry) -> str:
