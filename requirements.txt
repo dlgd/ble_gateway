@@ -1,5 +1,7 @@
 # Bluetooth Low Energy library
 bleak>=1.1.1
 
-# Cloud-agnostic MQTT client (replaces AWS IoT SDK)
-paho-mqtt>=1.6.0
+# Cloud-agnostic MQTT client (replaces AWS IoT SDK).
+# paho 2.x is required: the code uses the CallbackAPIVersion.VERSION2 API and
+# v2 callback signatures, which paho 1.x does not provide.
+paho-mqtt>=2.1.0,<3.0
