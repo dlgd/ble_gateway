@@ -5,7 +5,11 @@ import json
 from helpers import ad_manufacturer, ad_name, ad_uuid128, build_ext_adv_report
 
 from ble_message import BLEMessage
-from scan_backends import build_ble_message_from_report, parse_ext_adv_report
+from scan_backends import (
+    build_ble_message_from_report,
+    parse_ad_structures,
+    parse_ext_adv_report,
+)
 
 MOLLEAU_UUID = "0000eff0-eff0-1212-1515-eeffd1024132"
 
@@ -60,6 +64,64 @@ def test_hci_report_roundtrips_to_advertising_bytes():
     # The reconstructed advertising data must equal the original on-air bytes
     # (same AD types and ordering: name, 128-bit UUID, manufacturer).
     assert msg._reconstruct_advertising_data() == ad
+
+
+def test_service_data16_reconstructs_as_16bit_type():
+    # A Base-UUID (short) key must be emitted as AD type 0x16 with a 2-byte UUID,
+    # not 0x16 with the full 16-byte UUID (which corrupts the parsed payload).
+    key = "0000fd6f-0000-1000-8000-00805f9b34fb"  # 16-bit UUID 0xFD6F
+    msg = BLEMessage(
+        timestamp_ms=0,
+        device_address="AA:BB:CC:DD:EE:FF",
+        device_name=None,
+        rssi=-50,
+        manufacturer_data={},
+        service_data={key: b"\x01\x02\x03"},
+        service_uuids=[],
+        tx_power=None,
+    )
+    raw = msg._reconstruct_advertising_data()
+    assert raw[1] == 0x16  # AD type: 16-bit service data
+    assert raw[0] == 1 + 2 + 3  # type + 2 UUID bytes + 3 data bytes
+    # Round-trips through the spec parser back to the same key/data.
+    parsed = parse_ad_structures(raw)
+    assert parsed["service_data"] == {key: b"\x01\x02\x03"}
+
+
+def test_service_data128_reconstructs_as_128bit_type():
+    key = "0000eff0-eff0-1212-1515-eeffd1024132"  # genuine 128-bit UUID
+    msg = BLEMessage(
+        timestamp_ms=0,
+        device_address="AA:BB:CC:DD:EE:FF",
+        device_name=None,
+        rssi=-50,
+        manufacturer_data={},
+        service_data={key: b"\xaa\xbb"},
+        service_uuids=[],
+        tx_power=None,
+    )
+    raw = msg._reconstruct_advertising_data()
+    assert raw[1] == 0x21  # AD type: 128-bit service data
+    parsed = parse_ad_structures(raw)
+    assert parsed["service_data"] == {key: b"\xaa\xbb"}
+
+
+def test_short_service_uuid_reconstructs_as_16bit_list():
+    key = "0000fd6f-0000-1000-8000-00805f9b34fb"
+    msg = BLEMessage(
+        timestamp_ms=0,
+        device_address="AA:BB:CC:DD:EE:FF",
+        device_name=None,
+        rssi=-50,
+        manufacturer_data={},
+        service_data={},
+        service_uuids=[key],
+        tx_power=None,
+    )
+    raw = msg._reconstruct_advertising_data()
+    assert raw[1] == 0x02  # incomplete list of 16-bit UUIDs
+    parsed = parse_ad_structures(raw)
+    assert parsed["service_uuids"] == [key]
 
 
 def test_to_json_hex_encodes_bytes():

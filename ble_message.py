@@ -9,15 +9,41 @@ parsers be unit-tested without pulling in bleak/BlueZ.
 """
 
 import json
+import struct
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # BLE packet structure constants (AD types)
+BLE_UUID_TYPE_INCOMPLETE_16 = 0x02
+BLE_UUID_TYPE_INCOMPLETE_32 = 0x04
 BLE_UUID_TYPE_INCOMPLETE_128 = 0x06
 BLE_UUID_TYPE_COMPLETE_128 = 0x07  # AD type: complete list of 128-bit service UUIDs
 BLE_TYPE_NAME_COMPLETE = 0x09  # AD type: complete local name (device serial for V3)
 BLE_TYPE_MANUFACTURER_DATA = 0xFF
 BLE_TYPE_SERVICE_DATA_16BIT = 0x16
+BLE_TYPE_SERVICE_DATA_32BIT = 0x20
+BLE_TYPE_SERVICE_DATA_128BIT = 0x21
+
+# The Bluetooth Base UUID suffix. A 128-bit UUID string of the form
+# 0000xxxx-0000-1000-8000-00805f9b34fb (or xxxxxxxx-...) is really a 16-/32-bit
+# UUID and must be re-emitted at its native width, not padded to 128 bits.
+_BASE_UUID_TAIL = "00001000800000805f9b34fb"
+
+
+def _uuid_wire_form(uuid_str: str) -> Tuple[bytes, int]:
+    """Return the minimal little-endian wire bytes and width for a UUID string.
+
+    width is 2, 4 or 16 (bytes). Short (Base-UUID) forms collapse back to
+    16/32-bit so the reconstructed AD structure is spec-faithful; anything else
+    stays a full 128-bit UUID.
+    """
+    hexstr = uuid_str.replace("-", "").lower()
+    if len(hexstr) == 32 and hexstr[8:] == _BASE_UUID_TAIL:
+        value = int(hexstr[:8], 16)
+        if value <= 0xFFFF:
+            return struct.pack("<H", value), 2
+        return struct.pack("<I", value), 4
+    return bytes.fromhex(hexstr)[::-1], 16
 
 
 @dataclass
@@ -50,18 +76,21 @@ class BLEMessage:
             packet.append(BLE_TYPE_NAME_COMPLETE)
             packet.extend(name_bytes)
 
-        # Add service UUIDs (incomplete list of 128-bit UUIDs)
+        # Add service UUIDs. Emit each at its native width (16/32/128-bit) so a
+        # short UUID rendered as a Base-UUID string doesn't become a bogus
+        # 128-bit list entry. Completeness is unknown after normalization, so we
+        # emit the "incomplete" list type for each width.
+        _uuid_list_type = {
+            2: BLE_UUID_TYPE_INCOMPLETE_16,
+            4: BLE_UUID_TYPE_INCOMPLETE_32,
+            16: BLE_UUID_TYPE_INCOMPLETE_128,
+        }
         if self.service_uuids:
             for uuid_str in self.service_uuids:
-                # Remove hyphens and convert to bytes (little-endian for BLE)
-                uuid_hex = uuid_str.replace("-", "")
-                uuid_bytes = bytes.fromhex(uuid_hex)
-                # Reverse for little-endian
-                uuid_bytes_le = uuid_bytes[::-1]
-
-                # Length = 1 (type) + 16 (UUID bytes)
-                packet.append(17)
-                packet.append(BLE_UUID_TYPE_INCOMPLETE_128)
+                uuid_bytes_le, width = _uuid_wire_form(uuid_str)
+                # Length = 1 (type) + width (UUID bytes)
+                packet.append(1 + width)
+                packet.append(_uuid_list_type[width])
                 packet.extend(uuid_bytes_le)
 
         # Add manufacturer specific data
@@ -75,16 +104,23 @@ class BLEMessage:
             packet.append((company_id >> 8) & 0xFF)
             packet.extend(data)
 
-        # Add service data (16-bit UUID service data)
+        # Add service data with the AD type matching the UUID width. A short
+        # (Base-UUID) key becomes type 0x16 (16-bit) / 0x20 (32-bit); a genuine
+        # 128-bit UUID becomes type 0x21. Previously every entry was emitted as
+        # 0x16 with the full 16-byte UUID, which a spec parser reads as a 2-byte
+        # UUID followed by 14 junk payload bytes.
+        _service_data_type = {
+            2: BLE_TYPE_SERVICE_DATA_16BIT,
+            4: BLE_TYPE_SERVICE_DATA_32BIT,
+            16: BLE_TYPE_SERVICE_DATA_128BIT,
+        }
         for uuid_str, data in self.service_data.items():
-            uuid_hex = uuid_str.replace("-", "")
-            uuid_bytes = bytes.fromhex(uuid_hex)
-
+            uuid_bytes_le, width = _uuid_wire_form(uuid_str)
             # Length = 1 (type) + UUID bytes + data length
-            length = 1 + len(uuid_bytes) + len(data)
+            length = 1 + width + len(data)
             packet.append(length)
-            packet.append(BLE_TYPE_SERVICE_DATA_16BIT)
-            packet.extend(uuid_bytes[::-1])  # Little-endian
+            packet.append(_service_data_type[width])
+            packet.extend(uuid_bytes_le)  # Little-endian
             packet.extend(data)
 
         return bytes(packet)
