@@ -391,10 +391,10 @@ class BlueZScanBackend(ScanBackend):
         adapter = self.config.get("bluetooth_adapter")
         if adapter:
             self.logger.info(f"Using Bluetooth adapter: {adapter}")
-            if bluez_available:
-                bluez_args["adapter"] = adapter
-            else:
-                scanner_kwargs["adapter"] = adapter
+            # The adapter is a top-level BleakScanner kwarg, NOT a BlueZScannerArgs
+            # field (that TypedDict only carries `filters`/`or_patterns`). Putting
+            # it in bluez_args silently no-ops, so bleak scans the default adapter.
+            scanner_kwargs["adapter"] = adapter
 
         # Hardware-level service UUID filtering via SetDiscoveryFilter.
         service_uuids = None
